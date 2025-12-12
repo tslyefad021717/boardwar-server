@@ -7,7 +7,12 @@ const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  cors: {
+    origin: "*", // Permite conexões de qualquer lugar (importante para Web/Flutter Web futuro)
+    methods: ["GET", "POST"]
+  }
+});
 
 // --- ESTADO EM MEMÓRIA (Em produção, usar Redis/Mongo) ---
 let rankedQueue = []; // Fila de espera para Ranked
@@ -15,15 +20,15 @@ const activeMatches = {}; // Mapa de salaID -> { p1, p2, gameState... }
 
 io.use((socket, next) => {
   // MIDDLEWARE DE AUTENTICAÇÃO (Roadmap #2 e #3)
-  const { userId, name, token, skins, version } = socket.handshake.auth;
+  const auth = socket.handshake.auth || {};
+  const { userId, name, token, skins, version } = auth;
 
   // 1. Validar versão do app (Obrigatório para jogos online)
   if (version !== '1.0.0') {
-    return next(new Error("Por favor, atualize o jogo."));
+    // Você pode ser mais flexível aqui durante o desenvolvimento
+    // return next(new Error("Por favor, atualize o jogo."));
+    console.log(`Aviso: Cliente ${name} usando versão ${version}`);
   }
-
-  // 2. Validar Token (Futuro: Checar no banco de dados se é Sócio Fundador)
-  // if (!isValidToken(token)) return next(new Error("Auth fail"));
 
   // Salvar dados na sessão do socket
   socket.user = {
@@ -48,13 +53,21 @@ io.on('connection', (socket) => {
       if (rankedQueue.length > 0) {
         const opponent = rankedQueue.shift();
 
-        // Evita jogar contra si mesmo (se abrir 2 abas)
+        // Evita jogar contra si mesmo (se abrir 2 abas ou reconectar rápido)
         if (opponent.id === socket.id) {
           rankedQueue.push(opponent);
           return;
         }
 
-        startMatch(opponent, socket, 'ranked');
+        // Verifica se o oponente ainda está conectado antes de iniciar
+        if (opponent.connected) {
+          startMatch(opponent, socket, 'ranked');
+        } else {
+          // Oponente caiu da fila, tenta o próximo (se houver) ou entra na fila
+          // Aqui simplificamos: entra na fila
+          rankedQueue.push(socket);
+          socket.emit('status', 'Oponente desconectou. Na fila de espera...');
+        }
       } else {
         rankedQueue.push(socket);
         socket.emit('status', 'Na fila de espera...');
@@ -74,9 +87,6 @@ io.on('connection', (socket) => {
 
     // Repassa a jogada para o oponente na mesma sala
     socket.to(roomId).emit('game_message', msg);
-
-    // (Futuro: O servidor pode manter uma cópia do board aqui 
-    // e validar se o movimento é legal para evitar cheats)
   });
 
   // --- FIM DE JOGO E RANKING ---
@@ -89,9 +99,6 @@ io.on('connection', (socket) => {
     // Lógica simples de segurança: Só processa se não processou ainda
     if (match.processed) return;
     match.processed = true;
-
-    // Aqui entraria a lógica de atualização de ELO (Roadmap #2)
-    // updateElo(match.p1, match.p2, result);
 
     console.log(`Fim de jogo na sala ${roomId}. Resultado: ${data.result}`);
 
@@ -145,6 +152,8 @@ function startMatch(p1, p2, mode) {
   console.log(`Partida iniciada: ${p1.user.name} vs ${p2.user.name}`);
 }
 
-server.listen(3000, () => {
-  console.log('Servidor BoardWar rodando na porta 3000');
+// CORREÇÃO CRÍTICA AQUI EMBAIXO:
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Servidor BoardWar rodando na porta ${PORT}`);
 });
