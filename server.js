@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const { v4: uuidv4 } = require('uuid');
+const mongoose = require('mongoose'); // Importando o Mongoose
 
 const app = express();
 const server = http.createServer(app);
@@ -11,6 +12,33 @@ const io = new Server(server, {
   pingInterval: 5000
 });
 
+// ===========================================================================
+// 1. CONEXÃO COM MONGODB ATLAS
+// ===========================================================================
+const mongoURI = process.env.MONGO_URI;
+
+mongoose.connect(mongoURI)
+  .then(() => console.log("✅ Conectado ao MongoDB Atlas com sucesso!"))
+  .catch(err => {
+    console.error("❌ Erro ao conectar ao MongoDB:", err.message);
+    console.log("⚠️ O servidor continuará rodando, mas sem persistência de dados.");
+  });
+
+// Schema do Jogador
+const userSchema = new mongoose.Schema({
+  userId: { type: String, required: true, unique: true },
+  username: { type: String, required: true, unique: true },
+  elo: { type: Number, default: 1200 },
+  wins: { type: Number, default: 0 },
+  losses: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const User = mongoose.model('User', userSchema);
+
+// ===========================================================================
+// 2. VARIÁVEIS DE ESTADO
+// ===========================================================================
 let queues = {
   ranked: [],
   friendly: []
@@ -18,6 +46,7 @@ let queues = {
 
 const activeMatches = {};
 
+// Middleware de Autenticação Inicial
 io.use((socket, next) => {
   const auth = socket.handshake.auth || {};
   socket.user = {
@@ -32,52 +61,72 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   console.log(`[CONNECT] ${socket.user.name} (${socket.id})`);
 
-  // ===========================================================================
-  // 1. LÓGICA DE RECONEXÃO (SIMPLIFICADA)
-  // Como decidimos remover o Rejoin no App, o servidor apenas limpa resíduos antigos
-  // ===========================================================================
+  // --- REGISTRO / LOGIN DE NICKNAME ÚNICO ---
+  socket.on('register_user', async (data) => {
+    try {
+      const { userId, username } = data;
+      if (!username || username.trim().length < 3) {
+        return socket.emit('register_response', { success: false, message: "Nome muito curto!" });
+      }
+
+      // Verifica se o nome já existe para outro ID
+      const existingUser = await User.findOne({ username: username });
+      if (existingUser && existingUser.userId !== userId) {
+        return socket.emit('register_response', {
+          success: false,
+          message: "Este nome já está em uso por outro guerreiro!"
+        });
+      }
+
+      // Upsert: Cria se não existir, atualiza se existir
+      let user = await User.findOneAndUpdate(
+        { userId: userId },
+        { username: username },
+        { upsert: true, new: true }
+      );
+
+      socket.user.name = user.username;
+      socket.user.elo = user.elo;
+
+      socket.emit('register_response', {
+        success: true,
+        username: user.username,
+        elo: user.elo
+      });
+      console.log(`[AUTH] ${user.username} registrado/logado.`);
+    } catch (e) {
+      console.error("Erro no register_user:", e);
+      socket.emit('register_response', { success: false, message: "Erro ao acessar banco de dados." });
+    }
+  });
+
+  // Limpeza de resíduos de partidas antigas
   const oldRoomId = Object.keys(activeMatches).find(roomId => {
     const match = activeMatches[roomId];
     return match && (match.p1.id === socket.user.id || match.p2.id === socket.user.id);
   });
 
   if (oldRoomId) {
-    console.log(`[CLEANUP] Removendo partida antiga de ${socket.user.name} para nova sessão.`);
+    console.log(`[CLEANUP] Removendo partida antiga de ${socket.user.name}`);
     delete activeMatches[oldRoomId];
   }
 
   // ===========================================================================
-  // 2. MATCHMAKING
+  // 3. MATCHMAKING
   // ===========================================================================
   socket.on('find_match', (incomingData) => {
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
 
     let requestedMode = 'ranked';
-    try {
-      if (typeof incomingData === 'object' && incomingData !== null && incomingData.mode) {
-        requestedMode = incomingData.mode;
-      } else if (typeof incomingData === 'string') {
-        const cleanStr = incomingData.trim();
-        if (cleanStr.startsWith('{')) {
-          const parsed = JSON.parse(cleanStr);
-          if (parsed.mode) requestedMode = parsed.mode;
-        } else {
-          requestedMode = cleanStr;
-        }
-      }
-    } catch (e) {
-      console.log("Erro leitura modo, default: ranked.");
-    }
+    if (incomingData && incomingData.mode) requestedMode = incomingData.mode;
 
-    const finalMode = requestedMode.toLowerCase().trim();
-    const modeToUse = (finalMode === 'friendly') ? 'friendly' : 'ranked';
-
-    console.log(`[SEARCH] ${socket.user.name} entrou na fila: ${modeToUse.toUpperCase()}`);
+    const modeToUse = (requestedMode.toLowerCase() === 'friendly') ? 'friendly' : 'ranked';
+    console.log(`[SEARCH] ${socket.user.name} em ${modeToUse.toUpperCase()}`);
 
     const currentQueue = queues[modeToUse];
-
     let opponent = null;
+
     while (currentQueue.length > 0) {
       const candidate = currentQueue.shift();
       if (candidate.user.id === socket.user.id) continue;
@@ -90,19 +139,17 @@ io.on('connection', (socket) => {
       startMatch(opponent, socket, modeToUse);
     } else {
       currentQueue.push(socket);
-      const label = modeToUse === 'friendly' ? 'Amistoso' : 'Ranqueada';
-      socket.emit('status', `Buscando ${label}...`);
+      socket.emit('status', `Buscando oponente...`);
     }
   });
 
   socket.on('leave_queue', () => {
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
-    console.log(`[LEAVE] ${socket.user.name} saiu da fila.`);
   });
 
   // ===========================================================================
-  // 3. GAMEPLAY
+  // 4. GAMEPLAY
   // ===========================================================================
   socket.on('game_move', (msg) => {
     const rId = socket.roomId;
@@ -115,11 +162,9 @@ io.on('connection', (socket) => {
 
       socket.to(rId).emit('game_message', msg);
 
-      if (msg.type === 'game_over' || msg.gameOver === true ||
-        (match.p1Time <= 0) || (match.p2Time <= 0)) {
+      if (msg.type === 'game_over' || msg.gameOver === true || (match.p1Time <= 0) || (match.p2Time <= 0)) {
         console.log(`[GAME OVER] Encerrando sala ${rId}`);
         delete activeMatches[rId];
-        return;
       }
     }
   });
@@ -132,24 +177,17 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ===========================================================================
-  // 4. DESCONEXÃO (AJUSTADO PARA ENCERRAR A SALA)
-  // ===========================================================================
   socket.on('disconnect', () => {
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
 
     if (socket.roomId && activeMatches[socket.roomId]) {
       const rId = socket.roomId;
-      console.log(`[DISCONNECT] Jogador saiu. Encerrando sala ${rId} por W.O. imediato.`);
-
-      // Avisa o oponente que ele venceu porque o outro saiu (App fechado)
       io.to(rId).emit('game_message', {
         type: 'game_over',
         reason: 'opponent_disconnected',
         result: 'win_by_wo'
       });
-
       delete activeMatches[rId];
     }
   });
@@ -163,27 +201,17 @@ function startMatch(p1, p2, mode) {
   p2.roomId = roomId;
 
   activeMatches[roomId] = {
-    p1: { id: p1.user.id, name: p1.user.name, socketId: p1.id, elo: p1.user.elo, skins: p1.user.skins },
-    p2: { id: p2.user.id, name: p2.user.name, socketId: p2.id, elo: p2.user.elo, skins: p2.user.skins },
-    startTime: Date.now(),
+    p1: { id: p1.user.id, name: p1.user.name, socketId: p1.id, elo: p1.user.elo },
+    p2: { id: p2.user.id, name: p2.user.name, socketId: p2.id, elo: p2.user.elo },
     mode: mode,
     moveHistory: [],
     p1Time: 17 * 60,
     p2Time: 17 * 60
   };
 
-  p1.emit('match_found', {
-    isPlayer1: true,
-    opponent: { name: p2.user.name, skins: p2.user.skins, elo: p2.user.elo },
-    mode: mode
-  });
-
-  p2.emit('match_found', {
-    isPlayer1: false,
-    opponent: { name: p1.user.name, skins: p1.user.skins, elo: p1.user.elo },
-    mode: mode
-  });
+  p1.emit('match_found', { isPlayer1: true, opponent: { name: p2.user.name, elo: p2.user.elo }, mode });
+  p2.emit('match_found', { isPlayer1: false, opponent: { name: p1.user.name, elo: p1.user.elo }, mode });
 }
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
