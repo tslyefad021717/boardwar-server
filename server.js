@@ -11,17 +11,13 @@ const io = new Server(server, {
   pingInterval: 5000
 });
 
-// Filas separadas
 let queues = {
   ranked: [],
   friendly: []
 };
 
-// Armazena partidas ativas
-// Chave: RoomID, Valor: Objeto da partida
 const activeMatches = {};
 
-// Middleware de Autenticação/Identificação
 io.use((socket, next) => {
   const auth = socket.handshake.auth || {};
   socket.user = {
@@ -37,93 +33,26 @@ io.on('connection', (socket) => {
   console.log(`[CONNECT] ${socket.user.name} (${socket.id})`);
 
   // ===========================================================================
-  // 1. LÓGICA DE RECONEXÃO (REJOIN) - PREVINE O LOOP SE A SALA JÁ ACABOU
+  // 1. LÓGICA DE RECONEXÃO (SIMPLIFICADA)
+  // Como decidimos remover o Rejoin no App, o servidor apenas limpa resíduos antigos
   // ===========================================================================
-  const existingRoomId = Object.keys(activeMatches).find(roomId => {
+  const oldRoomId = Object.keys(activeMatches).find(roomId => {
     const match = activeMatches[roomId];
-    // Verifica se o usuário faz parte desta sala E se a sala ainda é válida
     return match && (match.p1.id === socket.user.id || match.p2.id === socket.user.id);
   });
 
-  if (existingRoomId) {
-    const match = activeMatches[existingRoomId];
-
-    // [IMPORTANTE] Atualiza o Socket ID na memória da partida
-    if (match.p1.id === socket.user.id) match.p1.socketId = socket.id;
-    else match.p2.socketId = socket.id;
-
-    socket.join(existingRoomId);
-    socket.roomId = existingRoomId;
-
-    // Cancela timer de destruição da sala (alguém voltou)
-    if (match.disconnectTimeout) {
-      console.log(`[REJOIN] ${socket.user.name} voltou em tempo! Cancelando W.O.`);
-      clearTimeout(match.disconnectTimeout);
-      delete match.disconnectTimeout;
-    }
-
-    const isP1 = (match.p1.id === socket.user.id);
-
-    // --- CHOQUE DE REALIDADE ---
-
-    // Verifica se o OPONENTE está online
-    const opponentSocketId = isP1 ? match.p2.socketId : match.p1.socketId;
-    const opponentSocket = io.sockets.sockets.get(opponentSocketId);
-    const isOpponentOnline = opponentSocket && opponentSocket.connected;
-
-    // Prepara dados de sincronia
-    const isP1Turn = (match.moveHistory.length % 2 === 0);
-    const syncData = {
-      history: match.moveHistory,
-      serverTurnIsP1: isP1Turn,
-      p1Time: match.p1Time || (17 * 60),
-      p2Time: match.p2Time || (17 * 60)
-    };
-
-    if (isOpponentOnline) {
-      console.log(`[REJOIN] ${socket.user.name} voltou. Enviando CHOQUE DE SYNC.`);
-      socket.to(existingRoomId).emit('opponent_rejoined_with_state', syncData);
-      socket.to(existingRoomId).emit('status', `${socket.user.name} reconectou!`);
-    } else {
-      console.log(`[REJOIN] ${socket.user.name} voltou, mas oponente OFF. Timer 50s.`);
-      socket.emit('status', 'Aguardando oponente retornar (50s)...');
-      socket.emit('opponent_disconnected', { timeout: 50 });
-
-      match.disconnectTimeout = setTimeout(() => {
-        if (activeMatches[existingRoomId]) {
-          console.log(`[TIMEOUT] W.O. na sala ${existingRoomId}`);
-          io.to(existingRoomId).emit('game_message', {
-            type: 'game_over',
-            reason: 'opponent_disconnected',
-            result: 'win_by_wo'
-          });
-          delete activeMatches[existingRoomId]; // Destrói a sala para evitar loop
-        }
-      }, 50000);
-    }
-
-    // Envia o estado atual para quem acabou de voltar
-    socket.emit('rejoin_success', {
-      isPlayer1: isP1,
-      opponent: isP1 ? match.p2 : match.p1,
-      history: match.moveHistory,
-      mode: match.mode,
-      serverTurnIsP1: isP1Turn,
-      p1Time: match.p1Time || (17 * 60),
-      p2Time: match.p2Time || (17 * 60)
-    });
-    return; // Encerra aqui para não processar matchmaking
+  if (oldRoomId) {
+    console.log(`[CLEANUP] Removendo partida antiga de ${socket.user.name} para nova sessão.`);
+    delete activeMatches[oldRoomId];
   }
 
   // ===========================================================================
   // 2. MATCHMAKING
   // ===========================================================================
   socket.on('find_match', (incomingData) => {
-    // 1. Limpeza
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
 
-    // 2. Leitura do Modo
     let requestedMode = 'ranked';
     try {
       if (typeof incomingData === 'object' && incomingData !== null && incomingData.mode) {
@@ -148,7 +77,6 @@ io.on('connection', (socket) => {
 
     const currentQueue = queues[modeToUse];
 
-    // Loop para encontrar oponente válido
     let opponent = null;
     while (currentQueue.length > 0) {
       const candidate = currentQueue.shift();
@@ -174,68 +102,38 @@ io.on('connection', (socket) => {
   });
 
   // ===========================================================================
-  // 3. GAMEPLAY (AQUI ESTÁ A CORREÇÃO DO LOOP ETERNO)
+  // 3. GAMEPLAY
   // ===========================================================================
   socket.on('game_move', (msg) => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
       const match = activeMatches[rId];
-
       match.moveHistory.push(msg);
 
-      // Atualiza tempos
       if (msg.p1Time !== undefined) match.p1Time = msg.p1Time;
       if (msg.p2Time !== undefined) match.p2Time = msg.p2Time;
 
-      // Repassa a mensagem para o oponente
       socket.to(rId).emit('game_message', msg);
 
-      // --- CORREÇÃO DO LOOP: DETECÇÃO DE FIM DE JOGO ---
-
-      // Caso 1: A mensagem diz explicitamente que é game over
-      if (msg.type === 'game_over' || msg.gameOver === true) {
-        console.log(`[GAME OVER] Detectado via game_move na sala ${rId}. Deletando sala.`);
-        if (match.disconnectTimeout) clearTimeout(match.disconnectTimeout);
-        delete activeMatches[rId]; // <--- TIRA O JOGADOR DO LOOP
+      if (msg.type === 'game_over' || msg.gameOver === true ||
+        (match.p1Time <= 0) || (match.p2Time <= 0)) {
+        console.log(`[GAME OVER] Encerrando sala ${rId}`);
+        delete activeMatches[rId];
         return;
-      }
-
-      // Caso 2: O tempo acabou (AFK) detectado pelo servidor
-      if ((match.p1Time !== undefined && match.p1Time <= 0) ||
-        (match.p2Time !== undefined && match.p2Time <= 0)) {
-        console.log(`[GAME OVER] Tempo esgotado (AFK) na sala ${rId}. Deletando sala.`);
-
-        // Avisa ambos que acabou por tempo (garantia)
-        io.to(rId).emit('game_message', {
-          type: 'game_over',
-          reason: 'time_out'
-        });
-
-        if (match.disconnectTimeout) clearTimeout(match.disconnectTimeout);
-        delete activeMatches[rId]; // <--- TIRA O JOGADOR DO LOOP
       }
     }
   });
 
-  // Listener explícito para Game Over (Relatado pelo cliente)
   socket.on('game_over_report', (data) => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
-      console.log(`[GAME OVER REPORT] Cliente reportou fim na sala ${rId}. Fechando.`);
-
-      // Avisa o oponente que acabou (caso ele não saiba)
-      socket.to(rId).emit('game_message', {
-        type: 'game_over',
-        report_data: data
-      });
-
-      if (activeMatches[rId].disconnectTimeout) clearTimeout(activeMatches[rId].disconnectTimeout);
-      delete activeMatches[rId]; // <--- TIRA O JOGADOR DO LOOP
+      socket.to(rId).emit('game_message', { type: 'game_over', report_data: data });
+      delete activeMatches[rId];
     }
   });
 
   // ===========================================================================
-  // 4. DESCONEXÃO E TIMER DE 50s
+  // 4. DESCONEXÃO (AJUSTADO PARA ENCERRAR A SALA)
   // ===========================================================================
   socket.on('disconnect', () => {
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
@@ -243,33 +141,22 @@ io.on('connection', (socket) => {
 
     if (socket.roomId && activeMatches[socket.roomId]) {
       const rId = socket.roomId;
-      const match = activeMatches[rId];
+      console.log(`[DISCONNECT] Jogador saiu. Encerrando sala ${rId} por W.O. imediato.`);
 
-      console.log(`[DISCONNECT] Jogador caiu na sala ${rId}. Timer de 50s.`);
+      // Avisa o oponente que ele venceu porque o outro saiu (App fechado)
+      io.to(rId).emit('game_message', {
+        type: 'game_over',
+        reason: 'opponent_disconnected',
+        result: 'win_by_wo'
+      });
 
-      socket.to(rId).emit('status', 'Oponente desconectou. Aguardando 50s...');
-      socket.to(rId).emit('opponent_disconnected', { timeout: 50 });
-
-      if (!match.disconnectTimeout) {
-        match.disconnectTimeout = setTimeout(() => {
-          if (activeMatches[rId]) {
-            console.log(`[TIMEOUT] W.O. definitivo na sala ${rId}.`);
-            io.to(rId).emit('game_message', {
-              type: 'game_over',
-              reason: 'opponent_disconnected',
-              result: 'win_by_wo'
-            });
-            delete activeMatches[rId]; // Limpa a sala
-          }
-        }, 50000);
-      }
+      delete activeMatches[rId];
     }
   });
 });
 
 function startMatch(p1, p2, mode) {
   const roomId = uuidv4();
-
   p1.join(roomId);
   p2.join(roomId);
   p1.roomId = roomId;
@@ -296,8 +183,6 @@ function startMatch(p1, p2, mode) {
     opponent: { name: p1.user.name, skins: p1.user.skins, elo: p1.user.elo },
     mode: mode
   });
-
-  console.log(`[START] Sala ${roomId} criada.`);
 }
 
 const PORT = process.env.PORT || 3000;
