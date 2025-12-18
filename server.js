@@ -2,7 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const { v4: uuidv4 } = require('uuid');
-const mongoose = require('mongoose'); // Importando o Mongoose
+const mongoose = require('mongoose');
 
 const app = express();
 const server = http.createServer(app);
@@ -24,7 +24,6 @@ mongoose.connect(mongoURI)
     console.log("⚠️ O servidor continuará rodando, mas sem persistência de dados.");
   });
 
-// Schema do Jogador
 const userSchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true },
   username: { type: String, required: true, unique: true },
@@ -49,6 +48,7 @@ const activeMatches = {};
 // Middleware de Autenticação Inicial
 io.use((socket, next) => {
   const auth = socket.handshake.auth || {};
+  // Prioriza o ID vindo do cliente para manter consistência
   socket.user = {
     id: auth.userId || uuidv4(),
     name: auth.name || 'Guerreiro',
@@ -61,15 +61,19 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   console.log(`[CONNECT] ${socket.user.name} (${socket.id})`);
 
-  // --- REGISTRO / LOGIN DE NICKNAME ÚNICO ---
   socket.on('register_user', async (data) => {
     try {
       const { userId, username } = data;
-      if (!username || username.trim().length < 3) {
-        return socket.emit('register_response', { success: false, message: "Nome muito curto!" });
+
+      // Validação: 3-15 caracteres, apenas letras, números e underline
+      const nameRegex = /^[a-zA-Z0-9_]{3,15}$/;
+      if (!username || !nameRegex.test(username)) {
+        return socket.emit('register_response', {
+          success: false,
+          message: "Nome inválido! Use 3-15 caracteres (letras, números ou underline)."
+        });
       }
 
-      // Verifica se o nome já existe para outro ID
       const existingUser = await User.findOne({ username: username });
       if (existingUser && existingUser.userId !== userId) {
         return socket.emit('register_response', {
@@ -78,13 +82,14 @@ io.on('connection', (socket) => {
         });
       }
 
-      // Upsert: Cria se não existir, atualiza se existir
+      // Upsert: Retorna o documento novo ou atualizado
       let user = await User.findOneAndUpdate(
         { userId: userId },
         { username: username },
-        { upsert: true, new: true }
+        { upsert: true, new: true, setDefaultsOnInsert: true }
       );
 
+      // Atualiza os dados da sessão do socket com o que veio do Banco (incluindo Elo)
       socket.user.name = user.username;
       socket.user.elo = user.elo;
 
@@ -93,14 +98,13 @@ io.on('connection', (socket) => {
         username: user.username,
         elo: user.elo
       });
-      console.log(`[AUTH] ${user.username} registrado/logado.`);
+      console.log(`[AUTH] ${user.username} (Elo: ${user.elo}) logado.`);
     } catch (e) {
       console.error("Erro no register_user:", e);
       socket.emit('register_response', { success: false, message: "Erro ao acessar banco de dados." });
     }
   });
 
-  // Limpeza de resíduos de partidas antigas
   const oldRoomId = Object.keys(activeMatches).find(roomId => {
     const match = activeMatches[roomId];
     return match && (match.p1.id === socket.user.id || match.p2.id === socket.user.id);
@@ -111,9 +115,6 @@ io.on('connection', (socket) => {
     delete activeMatches[oldRoomId];
   }
 
-  // ===========================================================================
-  // 3. MATCHMAKING
-  // ===========================================================================
   socket.on('find_match', (incomingData) => {
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
@@ -148,9 +149,6 @@ io.on('connection', (socket) => {
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
   });
 
-  // ===========================================================================
-  // 4. GAMEPLAY
-  // ===========================================================================
   socket.on('game_move', (msg) => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
