@@ -70,8 +70,8 @@ io.on('connection', (socket) => {
       if (!username || !nameRegex.test(username)) {
         return socket.emit('register_response', {
           success: false,
-          errorKey: 'profile.error_format', // <--- CÓDIGO DO ERRO
-          message: "Nome inválido!" // Fallback
+          errorKey: 'profile.error_format',
+          message: "Nome inválido!"
         });
       }
 
@@ -80,7 +80,7 @@ io.on('connection', (socket) => {
       if (existingUser && existingUser.userId !== userId) {
         return socket.emit('register_response', {
           success: false,
-          errorKey: 'profile.error_taken', // <--- CÓDIGO DO ERRO
+          errorKey: 'profile.error_taken',
           message: "Nome em uso!"
         });
       }
@@ -105,13 +105,13 @@ io.on('connection', (socket) => {
       console.error("Erro no register_user:", e);
       socket.emit('register_response', {
         success: false,
-        errorKey: 'profile.error_db', // <--- CÓDIGO DO ERRO
+        errorKey: 'profile.error_db',
         message: "Erro no servidor."
       });
     }
   });
 
-  // Limpeza de resíduos
+  // Limpeza de resíduos (caso o user tenha ficado preso numa sala antiga)
   const oldRoomId = Object.keys(activeMatches).find(roomId => {
     const match = activeMatches[roomId];
     return match && (match.p1.id === socket.user.id || match.p2.id === socket.user.id);
@@ -126,6 +126,7 @@ io.on('connection', (socket) => {
   // 3. MATCHMAKING
   // ===========================================================================
   socket.on('find_match', (incomingData) => {
+    // Remove de filas anteriores para evitar duplicação
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
 
@@ -173,9 +174,10 @@ io.on('connection', (socket) => {
 
       socket.to(rId).emit('game_message', msg);
 
+      // NOTA: Não deletamos a sala imediatamente no Game Over para permitir a Revanche.
+      // A sala será deletada se eles saírem ou recusarem a revanche.
       if (msg.type === 'game_over' || msg.gameOver === true || (match.p1Time <= 0) || (match.p2Time <= 0)) {
-        console.log(`[GAME OVER] Encerrando sala ${rId}`);
-        delete activeMatches[rId];
+        console.log(`[GAME OVER] Partida finalizada na sala ${rId}. Aguardando decisão de revanche...`);
       }
     }
   });
@@ -184,10 +186,50 @@ io.on('connection', (socket) => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
       socket.to(rId).emit('game_message', { type: 'game_over', report_data: data });
-      delete activeMatches[rId];
+      // Novamente: Não deletamos activeMatches[rId] aqui para permitir revanche.
     }
   });
 
+  // ===========================================================================
+  // 5. SISTEMA DE REVANCHE
+  // ===========================================================================
+  socket.on('request_rematch', () => {
+    const rId = socket.roomId;
+    if (rId && activeMatches[rId]) {
+      // Repassa o pedido para o oponente na mesma sala
+      socket.to(rId).emit('game_message', { type: 'rematch_requested' });
+    }
+  });
+
+  socket.on('respond_rematch', (data) => {
+    const rId = socket.roomId;
+    if (rId && activeMatches[rId]) {
+      const match = activeMatches[rId];
+
+      if (data.accepted) {
+        // --- ACEITOU: Reseta o estado da partida ---
+        match.moveHistory = [];
+        match.p1Time = 17 * 60; // Reinicia timers
+        match.p2Time = 17 * 60;
+
+        // Avisa AMBOS para resetarem o tabuleiro visualmente
+        io.to(rId).emit('game_message', { type: 'rematch_start' });
+        console.log(`[REMATCH] Iniciando revanche na sala ${rId}`);
+      } else {
+        // --- RECUSOU: Encerra a sala ---
+        // Avisa AMBOS que falhou
+        io.to(rId).emit('game_message', { type: 'rematch_failed' });
+
+        // Agora sim deletamos a sala, pois não haverá mais jogo
+        delete activeMatches[rId];
+        console.log(`[REMATCH] Recusada/Cancelada. Sala ${rId} excluída.`);
+      }
+    }
+  });
+
+  // ===========================================================================
+  // 6. DESCONEXÃO
+  // ===========================================================================
   socket.on('disconnect', () => {
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
@@ -199,6 +241,7 @@ io.on('connection', (socket) => {
         reason: 'opponent_disconnected',
         result: 'win_by_wo'
       });
+      // Se um desconectar, a partida morre e a revanche se torna impossível
       delete activeMatches[rId];
     }
   });
