@@ -2,7 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const { v4: uuidv4 } = require('uuid');
-const mongoose = require('mongoose'); // Importando o Mongoose
+const mongoose = require('mongoose');
 
 const app = express();
 const server = http.createServer(app);
@@ -46,14 +46,13 @@ let queues = {
 
 const activeMatches = {};
 
-// Middleware de Autenticação Inicial
 io.use((socket, next) => {
   const auth = socket.handshake.auth || {};
   socket.user = {
     id: auth.userId || uuidv4(),
     name: auth.name || 'Guerreiro',
     skins: auth.skins || {},
-    elo: 1200 // Elo inicial na sessão (será atualizado no register)
+    elo: 1200
   };
   next();
 });
@@ -66,32 +65,33 @@ io.on('connection', (socket) => {
     try {
       const { userId, username } = data;
 
-      // MUDANÇA AQUI: Validação mais segura com Regex (Letras, Números, Underline, 3-15 chars)
+      // Validação de Regex
       const nameRegex = /^[a-zA-Z0-9_]{3,15}$/;
       if (!username || !nameRegex.test(username)) {
         return socket.emit('register_response', {
           success: false,
-          message: "Nome inválido! Use 3-15 caracteres (letras, números ou _)."
+          errorKey: 'profile.error_format', // <--- CÓDIGO DO ERRO
+          message: "Nome inválido!" // Fallback
         });
       }
 
-      // Verifica se o nome já existe para outro ID
+      // Verifica se o nome já existe
       const existingUser = await User.findOne({ username: username });
       if (existingUser && existingUser.userId !== userId) {
         return socket.emit('register_response', {
           success: false,
-          message: "Este nome já está em uso por outro guerreiro!"
+          errorKey: 'profile.error_taken', // <--- CÓDIGO DO ERRO
+          message: "Nome em uso!"
         });
       }
 
-      // Upsert: Cria se não existir, atualiza se existir
+      // Upsert
       let user = await User.findOneAndUpdate(
         { userId: userId },
         { username: username },
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
 
-      // Atualiza a sessão do socket com os dados reais do banco
       socket.user.name = user.username;
       socket.user.elo = user.elo;
 
@@ -103,11 +103,15 @@ io.on('connection', (socket) => {
       console.log(`[AUTH] ${user.username} registrado/logado. Elo: ${user.elo}`);
     } catch (e) {
       console.error("Erro no register_user:", e);
-      socket.emit('register_response', { success: false, message: "Erro ao acessar banco de dados." });
+      socket.emit('register_response', {
+        success: false,
+        errorKey: 'profile.error_db', // <--- CÓDIGO DO ERRO
+        message: "Erro no servidor."
+      });
     }
   });
 
-  // Limpeza de resíduos de partidas antigas
+  // Limpeza de resíduos
   const oldRoomId = Object.keys(activeMatches).find(roomId => {
     const match = activeMatches[roomId];
     return match && (match.p1.id === socket.user.id || match.p2.id === socket.user.id);
