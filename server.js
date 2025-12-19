@@ -13,18 +13,13 @@ const io = new Server(server, {
 });
 
 // ===========================================================================
-// 1. CONEXÃO COM MONGODB ATLAS
+// 1. CONEXÃO COM MONGODB
 // ===========================================================================
 const mongoURI = process.env.MONGO_URI;
-
 mongoose.connect(mongoURI)
-  .then(() => console.log("✅ Conectado ao MongoDB Atlas com sucesso!"))
-  .catch(err => {
-    console.error("❌ Erro ao conectar ao MongoDB:", err.message);
-    console.log("⚠️ O servidor continuará rodando, mas sem persistência de dados.");
-  });
+  .then(() => console.log("✅ Conectado ao MongoDB Atlas"))
+  .catch(err => console.error("❌ Erro MongoDB:", err.message));
 
-// Schema do Jogador
 const userSchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true },
   username: { type: String, required: true, unique: true },
@@ -33,18 +28,14 @@ const userSchema = new mongoose.Schema({
   losses: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now }
 });
-
 const User = mongoose.model('User', userSchema);
 
 // ===========================================================================
-// 2. VARIÁVEIS DE ESTADO
+// 2. ESTADO GLOBAL
 // ===========================================================================
-let queues = {
-  ranked: [],
-  friendly: []
-};
-
+let queues = { ranked: [], friendly: [] };
 const activeMatches = {};
+const reconnectionTimeouts = {}; // Controle de W.O.
 
 io.use((socket, next) => {
   const auth = socket.handshake.auth || {};
@@ -60,100 +51,63 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   console.log(`[CONNECT] ${socket.user.name} (${socket.id})`);
 
-  // --- REGISTRO / LOGIN DE NICKNAME ÚNICO ---
-  socket.on('register_user', async (data) => {
-    try {
-      const { userId, username } = data;
-
-      // Validação de Regex
-      const nameRegex = /^[a-zA-Z0-9_]{3,15}$/;
-      if (!username || !nameRegex.test(username)) {
-        return socket.emit('register_response', {
-          success: false,
-          errorKey: 'profile.error_format',
-          message: "Nome inválido!"
-        });
-      }
-
-      // Verifica se o nome já existe
-      const existingUser = await User.findOne({ username: username });
-      if (existingUser && existingUser.userId !== userId) {
-        return socket.emit('register_response', {
-          success: false,
-          errorKey: 'profile.error_taken',
-          message: "Nome em uso!"
-        });
-      }
-
-      // Upsert
-      let user = await User.findOneAndUpdate(
-        { userId: userId },
-        { username: username },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
-      );
-
-      socket.user.name = user.username;
-      socket.user.elo = user.elo;
-
-      socket.emit('register_response', {
-        success: true,
-        username: user.username,
-        elo: user.elo
-      });
-      console.log(`[AUTH] ${user.username} registrado/logado. Elo: ${user.elo}`);
-    } catch (e) {
-      console.error("Erro no register_user:", e);
-      socket.emit('register_response', {
-        success: false,
-        errorKey: 'profile.error_db',
-        message: "Erro no servidor."
-      });
-    }
-  });
-
-  // Limpeza de resíduos (caso o user tenha ficado preso numa sala antiga)
-  const oldRoomId = Object.keys(activeMatches).find(roomId => {
+  // --- LÓGICA DE RECONEXÃO ---
+  const existingRoomId = Object.keys(activeMatches).find(roomId => {
     const match = activeMatches[roomId];
     return match && (match.p1.id === socket.user.id || match.p2.id === socket.user.id);
   });
 
-  if (oldRoomId) {
-    // Se ele reconectou, não deletamos a sala imediatamente aqui se for recente, 
-    // mas para simplificar o login, removemos referências antigas para evitar bugs.
-    // Nota: Em um sistema ideal de reconexão, aqui você reconectaria ele à sala existente.
-    console.log(`[CLEANUP] Removendo referência antiga de ${socket.user.name}`);
-    // Se quiser permitir "Rejoin", a lógica seria diferente aqui. 
-    // Por enquanto, seguimos sua lógica de limpar.
-    // delete activeMatches[oldRoomId]; <--- COMENTADO: Deixar o timeout cuidar da limpeza
+  if (existingRoomId) {
+    socket.roomId = existingRoomId;
+    socket.join(existingRoomId);
+    if (reconnectionTimeouts[existingRoomId]) {
+      clearTimeout(reconnectionTimeouts[existingRoomId]);
+      delete reconnectionTimeouts[existingRoomId];
+    }
+    socket.to(existingRoomId).emit('game_message', { type: 'opponent_reconnected' });
+    console.log(`[REJOIN] ${socket.user.name} voltou para ${existingRoomId}`);
   }
 
-  // ===========================================================================
-  // 3. MATCHMAKING
-  // ===========================================================================
+  // --- REGISTRO ---
+  socket.on('register_user', async (data) => {
+    try {
+      const { userId, username } = data;
+      const nameRegex = /^[a-zA-Z0-9_]{3,15}$/;
+      if (!username || !nameRegex.test(username)) {
+        return socket.emit('register_response', { success: false, message: "Nome inválido!" });
+      }
+      const existingUser = await User.findOne({ username });
+      if (existingUser && existingUser.userId !== userId) {
+        return socket.emit('register_response', { success: false, message: "Nome em uso!" });
+      }
+      let user = await User.findOneAndUpdate(
+        { userId }, { username }, { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+      socket.user.name = user.username;
+      socket.emit('register_response', { success: true, username: user.username, elo: user.elo });
+    } catch (e) {
+      socket.emit('register_response', { success: false, message: "Erro no servidor." });
+    }
+  });
+
+  // --- MATCHMAKING ---
   socket.on('find_match', (incomingData) => {
-    // Remove de filas anteriores para evitar duplicação
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
+    const mode = (incomingData?.mode?.toLowerCase() === 'friendly') ? 'friendly' : 'ranked';
+    const currentQueue = queues[mode];
 
-    let requestedMode = 'ranked';
-    if (incomingData && incomingData.mode) requestedMode = incomingData.mode;
-
-    const modeToUse = (requestedMode.toLowerCase() === 'friendly') ? 'friendly' : 'ranked';
-    console.log(`[SEARCH] ${socket.user.name} em ${modeToUse.toUpperCase()}`);
-
-    const currentQueue = queues[modeToUse];
     let opponent = null;
-
     while (currentQueue.length > 0) {
       const candidate = currentQueue.shift();
-      if (candidate.user.id === socket.user.id) continue;
-      if (!candidate.connected) continue;
-      opponent = candidate;
-      break;
+      if (candidate.user.id !== socket.user.id && candidate.connected) {
+        opponent = candidate;
+        break;
+      }
     }
 
     if (opponent) {
-      startMatch(opponent, socket, modeToUse);
+      startMatch(opponent, socket, mode);
     } else {
       currentQueue.push(socket);
       socket.emit('status', `Buscando oponente...`);
@@ -165,140 +119,76 @@ io.on('connection', (socket) => {
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
   });
 
-  // ===========================================================================
-  // 4. GAMEPLAY
-  // ===========================================================================
+  // --- GAMEPLAY ---
   socket.on('game_move', (msg) => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
       const match = activeMatches[rId];
       match.moveHistory.push(msg);
-
       if (msg.p1Time !== undefined) match.p1Time = msg.p1Time;
       if (msg.p2Time !== undefined) match.p2Time = msg.p2Time;
-
       socket.to(rId).emit('game_message', msg);
-
-      // NOTA: Não deletamos a sala imediatamente no Game Over para permitir a Revanche.
-      if (msg.type === 'game_over' || msg.gameOver === true || (match.p1Time <= 0) || (match.p2Time <= 0)) {
-        console.log(`[GAME OVER] Partida finalizada na sala ${rId}. Aguardando decisão de revanche...`);
-      }
     }
   });
 
   socket.on('game_over_report', (data) => {
-    const rId = socket.roomId;
-    if (rId && activeMatches[rId]) {
-      socket.to(rId).emit('game_message', { type: 'game_over', report_data: data });
+    if (socket.roomId && activeMatches[socket.roomId]) {
+      socket.to(socket.roomId).emit('game_message', { type: 'game_over', report_data: data });
     }
   });
 
-  // ===========================================================================
-  // 5. SISTEMA DE REVANCHE
-  // ===========================================================================
+  // --- REVANCHE ---
   socket.on('request_rematch', () => {
-    const rId = socket.roomId;
-    if (rId && activeMatches[rId]) {
-      // Repassa o pedido para o oponente na mesma sala
-      // Se o oponente caiu mas a sala ainda existe (graça de 15s), a mensagem vai 
-      // (ele não recebe se estiver off, mas o servidor não crasha).
-      socket.to(rId).emit('game_message', { type: 'rematch_requested' });
+    if (socket.roomId && activeMatches[socket.roomId]) {
+      socket.to(socket.roomId).emit('game_message', { type: 'rematch_requested' });
     }
   });
 
   socket.on('respond_rematch', (data) => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
-      const match = activeMatches[rId];
-
       if (data.accepted) {
-        // --- ACEITOU: Reseta o estado da partida ---
+        const match = activeMatches[rId];
         match.moveHistory = [];
-        match.p1Time = 17 * 60; // Reinicia timers
-        match.p2Time = 17 * 60;
-
-        // Avisa AMBOS para resetarem o tabuleiro visualmente
+        match.p1Time = 1020; match.p2Time = 1020;
         io.to(rId).emit('game_message', { type: 'rematch_start' });
-        console.log(`[REMATCH] Iniciando revanche na sala ${rId}`);
       } else {
-        // --- RECUSOU: Encerra a sala ---
         io.to(rId).emit('game_message', { type: 'rematch_failed' });
-
-        // Agora sim deletamos a sala
         delete activeMatches[rId];
-        console.log(`[REMATCH] Recusada/Cancelada. Sala ${rId} excluída.`);
       }
     }
   });
 
-  // ===========================================================================
-  // 6. DESCONEXÃO COM DELAY (GRACE PERIOD)
-  // ===========================================================================
   socket.on('disconnect', () => {
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
 
-    if (socket.roomId && activeMatches[socket.roomId]) {
-      const rId = socket.roomId;
-
-      // 1. AVISA O OPONENTE (mas mantém a sala viva)
-      // O cliente exibe "Oponente desconectou...", mas não encerra o jogo imediatamente
-      socket.to(rId).emit('game_message', {
-        type: 'opponent_disconnected'
-      });
-
-      console.log(`[DISCONNECT] ${socket.user.name} saiu da sala ${rId}. Aguardando 15s...`);
-
-      // 2. TIMEOUT DE 15 SEGUNDOS
-      setTimeout(() => {
-        // Verifica se a sala ainda existe (pode ter sido deletada por 'rematch_failed' ou outro motivo)
+    const rId = socket.roomId;
+    if (rId && activeMatches[rId]) {
+      socket.to(rId).emit('game_message', { type: 'opponent_disconnected' });
+      reconnectionTimeouts[rId] = setTimeout(() => {
         if (activeMatches[rId]) {
-          const match = activeMatches[rId];
-
-          // Verifica se a sala do Socket.IO está vazia (ambos saíram)
-          // ou se passou o tempo limite e ninguém reconectou.
-          const room = io.sockets.adapter.rooms.get(rId);
-
-          if (!room || room.size === 0) {
-            console.log(`[CLEANUP] Sala ${rId} vazia após 15s. Deletando.`);
-            delete activeMatches[rId];
-          } else {
-            // Se ainda tem alguém na sala (o oponente esperando), agora sim damos Game Over por W.O.
-            // Isso evita que o jogador que ficou espere para sempre.
-            io.to(rId).emit('game_message', {
-              type: 'game_over',
-              reason: 'opponent_disconnected',
-              result: 'win_by_wo'
-            });
-
-            console.log(`[CLEANUP] Sala ${rId} encerrada por W.O. após timeout.`);
-            delete activeMatches[rId];
-          }
+          io.to(rId).emit('game_message', {
+            type: 'game_over', reason: 'opponent_disconnected', result: 'win_by_wo'
+          });
+          delete activeMatches[rId];
+          delete reconnectionTimeouts[rId];
         }
-      }, 15000); // 15 segundos de tolerância
+      }, 15000);
     }
   });
 });
 
 function startMatch(p1, p2, mode) {
   const roomId = uuidv4();
-  p1.join(roomId);
-  p2.join(roomId);
-  p1.roomId = roomId;
-  p2.roomId = roomId;
-
+  [p1, p2].forEach(p => { p.join(roomId); p.roomId = roomId; });
   activeMatches[roomId] = {
-    p1: { id: p1.user.id, name: p1.user.name, socketId: p1.id, elo: p1.user.elo },
-    p2: { id: p2.user.id, name: p2.user.name, socketId: p2.id, elo: p2.user.elo },
-    mode: mode,
-    moveHistory: [],
-    p1Time: 17 * 60,
-    p2Time: 17 * 60
+    p1: { id: p1.user.id, name: p1.user.name, elo: p1.user.elo },
+    p2: { id: p2.user.id, name: p2.user.name, elo: p2.user.elo },
+    mode, moveHistory: [], p1Time: 1020, p2Time: 1020
   };
-
   p1.emit('match_found', { isPlayer1: true, opponent: { name: p2.user.name, elo: p2.user.elo }, mode });
   p2.emit('match_found', { isPlayer1: false, opponent: { name: p1.user.name, elo: p1.user.elo }, mode });
 }
 
-const PORT = process.env.PORT || 8080;
-server.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
+server.listen(process.env.PORT || 8080, () => console.log(`Servidor Ativo`));
