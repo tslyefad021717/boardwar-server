@@ -118,8 +118,13 @@ io.on('connection', (socket) => {
   });
 
   if (oldRoomId) {
-    console.log(`[CLEANUP] Removendo partida antiga de ${socket.user.name}`);
-    delete activeMatches[oldRoomId];
+    // Se ele reconectou, não deletamos a sala imediatamente aqui se for recente, 
+    // mas para simplificar o login, removemos referências antigas para evitar bugs.
+    // Nota: Em um sistema ideal de reconexão, aqui você reconectaria ele à sala existente.
+    console.log(`[CLEANUP] Removendo referência antiga de ${socket.user.name}`);
+    // Se quiser permitir "Rejoin", a lógica seria diferente aqui. 
+    // Por enquanto, seguimos sua lógica de limpar.
+    // delete activeMatches[oldRoomId]; <--- COMENTADO: Deixar o timeout cuidar da limpeza
   }
 
   // ===========================================================================
@@ -175,7 +180,6 @@ io.on('connection', (socket) => {
       socket.to(rId).emit('game_message', msg);
 
       // NOTA: Não deletamos a sala imediatamente no Game Over para permitir a Revanche.
-      // A sala será deletada se eles saírem ou recusarem a revanche.
       if (msg.type === 'game_over' || msg.gameOver === true || (match.p1Time <= 0) || (match.p2Time <= 0)) {
         console.log(`[GAME OVER] Partida finalizada na sala ${rId}. Aguardando decisão de revanche...`);
       }
@@ -186,7 +190,6 @@ io.on('connection', (socket) => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
       socket.to(rId).emit('game_message', { type: 'game_over', report_data: data });
-      // Novamente: Não deletamos activeMatches[rId] aqui para permitir revanche.
     }
   });
 
@@ -197,6 +200,8 @@ io.on('connection', (socket) => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
       // Repassa o pedido para o oponente na mesma sala
+      // Se o oponente caiu mas a sala ainda existe (graça de 15s), a mensagem vai 
+      // (ele não recebe se estiver off, mas o servidor não crasha).
       socket.to(rId).emit('game_message', { type: 'rematch_requested' });
     }
   });
@@ -217,10 +222,9 @@ io.on('connection', (socket) => {
         console.log(`[REMATCH] Iniciando revanche na sala ${rId}`);
       } else {
         // --- RECUSOU: Encerra a sala ---
-        // Avisa AMBOS que falhou
         io.to(rId).emit('game_message', { type: 'rematch_failed' });
 
-        // Agora sim deletamos a sala, pois não haverá mais jogo
+        // Agora sim deletamos a sala
         delete activeMatches[rId];
         console.log(`[REMATCH] Recusada/Cancelada. Sala ${rId} excluída.`);
       }
@@ -228,7 +232,7 @@ io.on('connection', (socket) => {
   });
 
   // ===========================================================================
-  // 6. DESCONEXÃO
+  // 6. DESCONEXÃO COM DELAY (GRACE PERIOD)
   // ===========================================================================
   socket.on('disconnect', () => {
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
@@ -236,13 +240,42 @@ io.on('connection', (socket) => {
 
     if (socket.roomId && activeMatches[socket.roomId]) {
       const rId = socket.roomId;
-      io.to(rId).emit('game_message', {
-        type: 'game_over',
-        reason: 'opponent_disconnected',
-        result: 'win_by_wo'
+
+      // 1. AVISA O OPONENTE (mas mantém a sala viva)
+      // O cliente exibe "Oponente desconectou...", mas não encerra o jogo imediatamente
+      socket.to(rId).emit('game_message', {
+        type: 'opponent_disconnected'
       });
-      // Se um desconectar, a partida morre e a revanche se torna impossível
-      delete activeMatches[rId];
+
+      console.log(`[DISCONNECT] ${socket.user.name} saiu da sala ${rId}. Aguardando 15s...`);
+
+      // 2. TIMEOUT DE 15 SEGUNDOS
+      setTimeout(() => {
+        // Verifica se a sala ainda existe (pode ter sido deletada por 'rematch_failed' ou outro motivo)
+        if (activeMatches[rId]) {
+          const match = activeMatches[rId];
+
+          // Verifica se a sala do Socket.IO está vazia (ambos saíram)
+          // ou se passou o tempo limite e ninguém reconectou.
+          const room = io.sockets.adapter.rooms.get(rId);
+
+          if (!room || room.size === 0) {
+            console.log(`[CLEANUP] Sala ${rId} vazia após 15s. Deletando.`);
+            delete activeMatches[rId];
+          } else {
+            // Se ainda tem alguém na sala (o oponente esperando), agora sim damos Game Over por W.O.
+            // Isso evita que o jogador que ficou espere para sempre.
+            io.to(rId).emit('game_message', {
+              type: 'game_over',
+              reason: 'opponent_disconnected',
+              result: 'win_by_wo'
+            });
+
+            console.log(`[CLEANUP] Sala ${rId} encerrada por W.O. após timeout.`);
+            delete activeMatches[rId];
+          }
+        }
+      }, 15000); // 15 segundos de tolerância
     }
   });
 });
