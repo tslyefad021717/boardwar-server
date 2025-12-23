@@ -38,7 +38,7 @@ const activeMatches = {};
 const reconnectionTimeouts = {};
 
 // ===========================================================================
-// 3. LÓGICA DE ELO (CORRIGIDA E ATUALIZADA)
+// 3. LÓGICA DE ELO (CORRIGIDA)
 // ===========================================================================
 function getRankName(elo) {
   if (elo < 500) return "Camponês";
@@ -51,43 +51,36 @@ function getRankName(elo) {
 
 function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
   let delta = 0;
-  // Normaliza para evitar erros de maiúscula/minúscula
   const res = result?.toLowerCase() || '';
   const rea = reason?.toLowerCase() || '';
 
-  // --- LÓGICA DE VITÓRIA ---
+  // --- VITÓRIA ---
   if (res === 'win' || res === 'victory' || res === 'win_by_wo') {
     switch (rea) {
       case 'regicide': delta = 10; break;
       case 'dominance': delta = 9; break;
       case 'annihilation': delta = 8; break;
-      case 'surrender': delta = 7; break; // Ganha 7 se o outro desistiu
+      case 'surrender': delta = 7; break;
       case 'afk': delta = 7; break;
       case 'opponent_disconnected': delta = 7; break;
       case 'time_out': delta = 9; break;
-      default: delta = 5; // Valor de segurança caso motivo venha vazio
+      default: delta = 5;
     }
 
-    // Bônus Davi vs Golias
     if (oppElo > myElo) {
       const diffPercent = ((oppElo - myElo) / myElo) * 100;
-      if (diffPercent >= 20) {
-        delta += 3;
-      } else if (diffPercent >= 15) {
-        delta += 1;
-      }
+      if (diffPercent >= 20) delta += 3;
+      else if (diffPercent >= 15) delta += 1;
     }
-    return delta; // Retorna positivo
+    return delta;
   }
 
-  // --- LÓGICA DE DERROTA ---
+  // --- DERROTA ---
   else {
-    // Se a pessoa desistiu ou caiu, penalidade fixa (sem bônus de performance)
     if (rea === 'quit' || rea === 'opponent_disconnected') return -17;
     if (rea === 'afk') return -10;
     if (rea === 'surrender') return -10;
 
-    // Derrota jogada (calcula performance)
     let baseLoss = -8;
     let modifiers = 0;
 
@@ -101,7 +94,6 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
       modifiers += 4;
     }
 
-    // Penalidade se perdeu sendo favorito
     if (myElo > oppElo) {
       const mmrDiff = ((myElo - oppElo) / myElo) * 100;
       if (mmrDiff >= 20) modifiers -= 2;
@@ -109,34 +101,26 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
     }
 
     delta = baseLoss + modifiers;
-    // Garante que não ganhe pontos perdendo (max 0)
     return delta > 0 ? 0 : delta;
   }
 }
 
 // ===========================================================================
-// 4. LÓGICA DE MATCHMAKING DINÂMICO
+// 4. MATCHMAKING DINÂMICO
 // ===========================================================================
-
 function findMatchDynamic() {
   const mode = 'ranked';
   const queue = queues[mode];
-  // Precisa de pelo menos 2 pessoas
   if (queue.length < 2) return;
 
-  // Percorre a fila tentando parear
   for (let i = 0; i < queue.length; i++) {
     for (let j = i + 1; j < queue.length; j++) {
       const p1 = queue[i];
       const p2 = queue[j];
 
-      // Evita parear com si mesmo (segurança)
       if (p1.user.id === p2.user.id) continue;
 
-      // Tempo de espera do mais antigo (em segundos)
       const waitTime = (Date.now() - Math.min(p1.joinedAt, p2.joinedAt)) / 1000;
-
-      // Expansão: 5% base + 5% a cada 30s. Limite 30%.
       let marginPercent = 5 + (Math.floor(waitTime / 30) * 5);
       if (marginPercent > 30) marginPercent = 30;
 
@@ -145,25 +129,20 @@ function findMatchDynamic() {
       const maxAllowedDiff = avgElo * (marginPercent / 100);
 
       if (eloDiff <= maxAllowedDiff) {
-        // Encontrou par: remove da fila e inicia
         queues[mode].splice(j, 1);
         queues[mode].splice(i, 1);
         startMatch(p1, p2, mode);
-
-        // Reinicia a busca pois a fila mudou
         return findMatchDynamic();
       }
     }
   }
 }
 
-// Roda o verificador da fila a cada 5 segundos
 setInterval(findMatchDynamic, 5000);
 
 // ===========================================================================
 // 5. SOCKET.IO
 // ===========================================================================
-
 io.use((socket, next) => {
   const auth = socket.handshake.auth || {};
   socket.user = {
@@ -220,8 +199,6 @@ io.on('connection', (socket) => {
   // --- MATCHMAKING ---
   socket.on('find_match', (incomingData) => {
     const mode = (incomingData?.mode?.toLowerCase() === 'friendly') ? 'friendly' : 'ranked';
-
-    // Remove se já estiver em alguma fila (evita duplicação)
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
 
@@ -230,9 +207,9 @@ io.on('connection', (socket) => {
       if (opponent) startMatch(opponent, socket, 'friendly');
       else queues.friendly.push(socket);
     } else {
-      socket.joinedAt = Date.now(); // Marca hora de entrada para expansão do elo
+      socket.joinedAt = Date.now();
       queues.ranked.push(socket);
-      findMatchDynamic(); // Tenta parear na hora
+      findMatchDynamic();
     }
     socket.emit('status', `Buscando oponente...`);
   });
@@ -256,14 +233,39 @@ io.on('connection', (socket) => {
     if (socket.roomId) socket.to(socket.roomId).emit('sync_game_state', data);
   });
 
+  // ============================================================
+  // --- REVANCHE (ESTE BLOCO ESTAVA FALTANDO!) ---
+  // ============================================================
+  socket.on('request_rematch', () => {
+    if (socket.roomId && activeMatches[socket.roomId]) {
+      socket.to(socket.roomId).emit('game_message', { type: 'rematch_requested' });
+    }
+  });
+
+  socket.on('respond_rematch', (data) => {
+    const rId = socket.roomId;
+    if (rId && activeMatches[rId]) {
+      if (data.accepted) {
+        const match = activeMatches[rId];
+        match.moveHistory = [];
+        match.p1Time = 1020;
+        match.p2Time = 1020;
+        // Reinicia a partida na mesma sala
+        io.to(rId).emit('game_message', { type: 'rematch_start' });
+      } else {
+        io.to(rId).emit('game_message', { type: 'rematch_failed' });
+      }
+    }
+  });
+  // ============================================================
+
   // --- GAME OVER ---
   socket.on('game_over_report', async (data) => {
     const rId = socket.roomId;
     if (!rId || !activeMatches[rId]) return;
     const match = activeMatches[rId];
 
-    // Log para debug no servidor
-    console.log(`[GAME OVER] Sala ${rId} - Result: ${data.result}, Reason: ${data.reason}`);
+    console.log(`[GAME OVER] Sala ${rId} - Res: ${data.result}, Motivo: ${data.reason}`);
 
     try {
       const user = await User.findOne({ userId: socket.user.id });
@@ -277,7 +279,6 @@ io.on('connection', (socket) => {
         let newElo = Math.max(0, user.elo + delta);
         user.elo = newElo;
 
-        // Atualiza contadores de vitória/derrota
         const resLower = data.result?.toLowerCase() || '';
         if (resLower.includes('win') || resLower.includes('victory')) {
           user.wins++;
@@ -304,12 +305,10 @@ io.on('connection', (socket) => {
 
       reconnectionTimeouts[rId] = setTimeout(async () => {
         if (activeMatches[rId]) {
-          const match = activeMatches[rId];
           io.to(rId).emit('game_message', { type: 'game_over', reason: 'opponent_disconnected', result: 'win_by_wo' });
 
-          if (match.mode === 'ranked') {
+          if (activeMatches[rId].mode === 'ranked') {
             try {
-              // Punição por W.O. (quem saiu perde 17)
               const quitter = await User.findOne({ userId: socket.user.id });
               if (quitter) {
                 quitter.elo = Math.max(0, quitter.elo - 17);
