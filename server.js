@@ -257,7 +257,7 @@ io.on('connection', (socket) => {
   });
 
   // ============================================================
-  // --- REVANCHE (CORRIGIDO PARA REMOVER A PARTIDA AO NEGAR) ---
+  // --- REVANCHE ---
   // ============================================================
   socket.on('request_rematch', () => {
     if (socket.roomId && activeMatches[socket.roomId]) {
@@ -277,12 +277,24 @@ io.on('connection', (socket) => {
         io.to(rId).emit('game_message', { type: 'rematch_start' });
       } else {
         io.to(rId).emit('game_message', { type: 'rematch_failed' });
-        // --- AQUI ESTÁ A CORREÇÃO CRÍTICA ---
-        // Se a revanche for negada, removemos a partida imediatamente.
-        // Assim, quando o usuário sair da tela (disconnect), 
-        // o servidor não tentará puni-lo por "abandono".
+        // Se a revanche for negada, removemos a partida imediatamente
+        // para evitar punição de disconnect
         delete activeMatches[rId];
       }
+    }
+  });
+
+  // ============================================================
+  // --- NOVO: CANCELAMENTO DE REVANCHE ---
+  // ============================================================
+  socket.on('cancel_rematch', () => {
+    const rId = socket.roomId;
+    if (rId && activeMatches[rId]) {
+      // 1. Avisa TODOS na sala (quem pediu e quem ignorou) que falhou
+      io.to(rId).emit('game_message', { type: 'rematch_failed' });
+
+      // 2. Deleta a partida para ninguém perder pontos ao sair
+      delete activeMatches[rId];
     }
   });
   // ============================================================
