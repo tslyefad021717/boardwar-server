@@ -243,12 +243,17 @@ io.on('connection', (socket) => {
   });
 
   // --- GAMEPLAY ---
+  // --- GAMEPLAY ---
   socket.on('game_move', (msg) => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
-      const match = activeMatches[rId];
-      match.moveHistory.push(msg);
-      socket.to(rId).emit('game_message', msg);
+      // Pequena validação para garantir que estamos repassando um objeto
+      if (msg && typeof msg === 'object') {
+        const match = activeMatches[rId];
+        match.moveHistory.push(msg);
+        // Broadcast para a sala (incluindo o oponente)
+        socket.to(rId).emit('game_message', msg);
+      }
     }
   });
 
