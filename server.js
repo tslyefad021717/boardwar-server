@@ -357,30 +357,83 @@ io.on('connection', (socket) => {
   });
 
   // --- DESCONEXÃO ---
+  // --- DESCONEXÃO ---
   socket.on('disconnect', async () => {
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
 
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
+      // Avisa o oponente que o jogador caiu
       socket.to(rId).emit('game_message', { type: 'opponent_disconnected' });
 
       reconnectionTimeouts[rId] = setTimeout(async () => {
         if (activeMatches[rId]) {
           const match = activeMatches[rId];
-          io.to(rId).emit('game_message', { type: 'game_over', reason: 'opponent_disconnected', result: 'win_by_wo' });
+
+          // Envia Game Over por W.O.
+          io.to(rId).emit('game_message', {
+            type: 'game_over',
+            reason: 'opponent_disconnected',
+            result: 'win_by_wo'
+          });
 
           if (match.mode === 'ranked') {
             try {
-              // Punição por W.O. (quem saiu perde 17)
-              const quitter = await User.findOne({ userId: socket.user.id });
+              // 1. Identificar quem é quem
+              const isP1Quitter = match.p1.id === socket.user.id;
+              const quitterId = socket.user.id;
+              const winnerId = isP1Quitter ? match.p2.id : match.p1.id;
+
+              // -----------------------------------------------------------
+              // A. PUNIR QUEM SAIU (Lógica Original Mantida)
+              // -----------------------------------------------------------
+              const quitter = await User.findOne({ userId: quitterId });
+              let quitterElo = 600; // Valor padrão caso não ache
+
               if (quitter) {
+                quitterElo = quitter.elo;
                 quitter.elo = Math.max(0, quitter.elo - 17);
                 quitter.losses++;
                 await quitter.save();
+                console.log(`[ELO] Quitter ${quitter.username} perdeu 17 pts.`);
               }
-            } catch (e) { }
+
+              // -----------------------------------------------------------
+              // B. PREMIAR O VENCEDOR (Nova Lógica Adicionada)
+              // -----------------------------------------------------------
+              const winner = await User.findOne({ userId: winnerId });
+              if (winner) {
+                // Calcula quanto o vencedor ganha baseando-se no Elo de quem saiu
+                const delta = calculateEloDelta(
+                  'win',
+                  'opponent_disconnected',
+                  0, 0, // Placar irrelevante no W.O.
+                  winner.elo,
+                  quitterElo
+                );
+
+                winner.elo += delta;
+                winner.wins++;
+                await winner.save();
+
+                console.log(`[ELO] Winner ${winner.username} ganhou ${delta} pts.`);
+
+                // Envia atualização de Elo APENAS para o vencedor que ainda está na sala
+                // Usamos socket.to(rId) porque 'socket' é quem saiu. 
+                // O .to(rId) manda para os outros na sala (o vencedor).
+                socket.to(rId).emit('elo_update', {
+                  newElo: winner.elo,
+                  delta,
+                  rank: getRankName(winner.elo)
+                });
+              }
+
+            } catch (e) {
+              console.error("Erro ao atualizar Elos na desconexão:", e);
+            }
           }
+
           delete activeMatches[rId];
           delete reconnectionTimeouts[rId];
         }
