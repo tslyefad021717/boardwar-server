@@ -243,7 +243,6 @@ io.on('connection', (socket) => {
   });
 
   // --- GAMEPLAY ---
-  // --- GAMEPLAY ---
   socket.on('game_move', (msg) => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
@@ -290,13 +289,21 @@ io.on('connection', (socket) => {
   });
 
   // ============================================================
-  // --- NOVO: CANCELAMENTO DE REVANCHE ---
+  // --- NOVO: CANCELAMENTO DE REVANCHE (BLINDADO) ---
   // ============================================================
   socket.on('cancel_rematch', () => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
       // 1. Avisa TODOS na sala (quem pediu e quem ignorou) que falhou
       io.to(rId).emit('game_message', { type: 'rematch_failed' });
+
+      // [BLINDAGEM ADICIONADA]
+      // Se havia um timeout de desconexão (oponente quitou), cancela ele agora
+      // para evitar que ele tente acessar a sala deletada depois.
+      if (reconnectionTimeouts[rId]) {
+        clearTimeout(reconnectionTimeouts[rId]);
+        delete reconnectionTimeouts[rId];
+      }
 
       // 2. Deleta a partida para ninguém perder pontos ao sair
       delete activeMatches[rId];
@@ -338,7 +345,15 @@ io.on('connection', (socket) => {
       }
     } catch (e) { console.error("Erro Elo Report:", e); }
 
-    socket.to(rId).emit('game_message', { type: 'game_over', report_data: data });
+    // [MELHORIA DE COMPATIBILIDADE]
+    // Enviamos 'reason' e 'result' na raiz do objeto também,
+    // pois o cliente verifica msg['reason'] diretamente.
+    socket.to(rId).emit('game_message', {
+      type: 'game_over',
+      reason: data.reason,
+      result: data.result,
+      report_data: data
+    });
   });
 
   // --- DESCONEXÃO ---
