@@ -212,6 +212,7 @@ io.on('connection', (socket) => {
   });
 
   // --- SISTEMA DE AMIGOS (NOVO) ---
+  // 1. Adicionar Amigo (COM AVISO DE RETORNO)
   socket.on('add_friend', async (targetName) => {
     try {
       const target = await User.findOne({ username: targetName });
@@ -221,13 +222,21 @@ io.on('connection', (socket) => {
       const me = await User.findOne({ userId: socket.user.id });
       if (!me) return;
 
-      // Limite de 20 amigos
       if (me.friends.length >= 20) return socket.emit('friend_error', 'Limite de 20 amigos atingido!');
       if (me.friends.includes(target.userId)) return socket.emit('friend_error', 'Já é seu amigo.');
 
       me.friends.push(target.userId);
       await me.save();
       socket.emit('friend_success', `Agora você segue ${target.username}!`);
+
+      // --- NOVO: AVISA O OUTRO JOGADOR ---
+      const targetSocketId = onlineUsers[target.userId];
+      if (targetSocketId) {
+        // Envia apenas o nome de quem adicionou
+        io.to(targetSocketId).emit('friend_added_you', { name: socket.user.name });
+      }
+      // -----------------------------------
+
     } catch (e) { console.error(e); }
   });
 
