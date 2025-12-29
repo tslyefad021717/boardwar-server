@@ -20,12 +20,18 @@ mongoose.connect(mongoURI)
   .then(() => console.log("✅ Conectado ao MongoDB Atlas"))
   .catch(err => console.error("❌ Erro MongoDB:", err.message));
 
+// --- MAPA DE USUÁRIOS ONLINE (NOVO) ---
+// Formato: { "userId": "socketId" }
+const onlineUsers = {};
+
 const userSchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true },
   username: { type: String, required: true, unique: true },
   elo: { type: Number, default: 600 },
   wins: { type: Number, default: 0 },
   losses: { type: Number, default: 0 },
+  // --- NOVO CAMPO: AMIGOS ---
+  friends: [{ type: String }], // Lista de userIds
   createdAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', userSchema);
@@ -38,7 +44,7 @@ const activeMatches = {};
 const reconnectionTimeouts = {};
 
 // ===========================================================================
-// 3. LÓGICA DE ELO (CORRIGIDA E ATUALIZADA)
+// 3. LÓGICA DE ELO
 // ===========================================================================
 function getRankName(elo) {
   if (elo < 500) return "Camponês";
@@ -51,7 +57,6 @@ function getRankName(elo) {
 
 function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
   let delta = 0;
-  // Normaliza para evitar erros de maiúscula/minúscula
   const res = result?.toLowerCase() || '';
   const rea = reason?.toLowerCase() || '';
 
@@ -61,11 +66,11 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
       case 'regicide': delta = 10; break;
       case 'dominance': delta = 9; break;
       case 'annihilation': delta = 8; break;
-      case 'surrender': delta = 7; break; // Ganha 7 se o outro desistiu
+      case 'surrender': delta = 7; break;
       case 'afk': delta = 7; break;
       case 'opponent_disconnected': delta = 7; break;
       case 'time_out': delta = 9; break;
-      default: delta = 5; // Valor de segurança caso motivo venha vazio
+      default: delta = 5;
     }
 
     // Bônus Davi vs Golias
@@ -77,17 +82,15 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
         delta += 1;
       }
     }
-    return delta; // Retorna positivo
+    return delta;
   }
 
   // --- LÓGICA DE DERROTA ---
   else {
-    // Se a pessoa desistiu ou caiu, penalidade fixa (sem bônus de performance)
     if (rea === 'quit' || rea === 'opponent_disconnected') return -17;
     if (rea === 'afk') return -10;
     if (rea === 'surrender') return -10;
 
-    // Derrota jogada (calcula performance)
     let baseLoss = -8;
     let modifiers = 0;
 
@@ -101,7 +104,6 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
       modifiers += 4;
     }
 
-    // Penalidade se perdeu sendo favorito
     if (myElo > oppElo) {
       const mmrDiff = ((myElo - oppElo) / myElo) * 100;
       if (mmrDiff >= 20) modifiers -= 2;
@@ -109,7 +111,6 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
     }
 
     delta = baseLoss + modifiers;
-    // Garante que não ganhe pontos perdendo (max 0)
     return delta > 0 ? 0 : delta;
   }
 }
@@ -121,22 +122,16 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
 function findMatchDynamic() {
   const mode = 'ranked';
   const queue = queues[mode];
-  // Precisa de pelo menos 2 pessoas
   if (queue.length < 2) return;
 
-  // Percorre a fila tentando parear
   for (let i = 0; i < queue.length; i++) {
     for (let j = i + 1; j < queue.length; j++) {
       const p1 = queue[i];
       const p2 = queue[j];
 
-      // Evita parear com si mesmo (segurança)
       if (p1.user.id === p2.user.id) continue;
 
-      // Tempo de espera do mais antigo (em segundos)
       const waitTime = (Date.now() - Math.min(p1.joinedAt, p2.joinedAt)) / 1000;
-
-      // Expansão: 5% base + 5% a cada 30s. Limite 30%.
       let marginPercent = 5 + (Math.floor(waitTime / 30) * 5);
       if (marginPercent > 30) marginPercent = 30;
 
@@ -145,19 +140,15 @@ function findMatchDynamic() {
       const maxAllowedDiff = avgElo * (marginPercent / 100);
 
       if (eloDiff <= maxAllowedDiff) {
-        // Encontrou par: remove da fila e inicia
         queues[mode].splice(j, 1);
         queues[mode].splice(i, 1);
         startMatch(p1, p2, mode);
-
-        // Reinicia a busca pois a fila mudou
         return findMatchDynamic();
       }
     }
   }
 }
 
-// Roda o verificador da fila a cada 5 segundos
 setInterval(findMatchDynamic, 5000);
 
 // ===========================================================================
@@ -177,6 +168,9 @@ io.use((socket, next) => {
 
 io.on('connection', (socket) => {
   console.log(`[CONNECT] ${socket.user.name} (${socket.id})`);
+
+  // --- REGISTRA ONLINE ---
+  onlineUsers[socket.user.id] = socket.id;
 
   // --- RECONEXÃO ---
   const existingRoomId = Object.keys(activeMatches).find(roomId => {
@@ -217,11 +211,79 @@ io.on('connection', (socket) => {
     }
   });
 
+  // --- SISTEMA DE AMIGOS (NOVO) ---
+  socket.on('add_friend', async (targetName) => {
+    try {
+      const target = await User.findOne({ username: targetName });
+      if (!target) return socket.emit('friend_error', 'Guerreiro não encontrado.');
+      if (target.userId === socket.user.id) return socket.emit('friend_error', 'Você não pode adicionar a si mesmo.');
+
+      const me = await User.findOne({ userId: socket.user.id });
+      if (!me) return;
+
+      // Limite de 20 amigos
+      if (me.friends.length >= 20) return socket.emit('friend_error', 'Limite de 20 amigos atingido!');
+      if (me.friends.includes(target.userId)) return socket.emit('friend_error', 'Já é seu amigo.');
+
+      me.friends.push(target.userId);
+      await me.save();
+      socket.emit('friend_success', `Agora você segue ${target.username}!`);
+    } catch (e) { console.error(e); }
+  });
+
+  socket.on('get_friends_list', async () => {
+    try {
+      const me = await User.findOne({ userId: socket.user.id });
+      if (!me || !me.friends) return socket.emit('friends_list_data', []);
+
+      const friendsData = await User.find({ userId: { $in: me.friends } })
+        .select('userId username elo');
+
+      const processedList = friendsData.map(f => ({
+        id: f.userId,
+        name: f.username,
+        elo: f.elo,
+        rank: getRankName(f.elo),
+        isOnline: !!onlineUsers[f.userId] // True se estiver no mapa de online
+      }));
+
+      socket.emit('friends_list_data', processedList);
+    } catch (e) { console.error(e); }
+  });
+
+  socket.on('invite_friend', (friendId) => {
+    const friendSocketId = onlineUsers[friendId];
+    if (friendSocketId) {
+      io.to(friendSocketId).emit('game_invite', {
+        inviterId: socket.user.id,
+        inviterName: socket.user.name
+      });
+    } else {
+      socket.emit('friend_error', 'Amigo está offline ou em batalha.');
+    }
+  });
+
+  socket.on('accept_invite', (inviterId) => {
+    const inviterSocketId = onlineUsers[inviterId];
+    if (inviterSocketId) {
+      const inviterSocket = io.sockets.sockets.get(inviterSocketId);
+      if (inviterSocket) {
+        // Remove das filas se estiverem
+        queues.ranked = queues.ranked.filter(s => s.id !== socket.id && s.id !== inviterSocket.id);
+        queues.friendly = queues.friendly.filter(s => s.id !== socket.id && s.id !== inviterSocket.id);
+
+        // Inicia partida AMISTOSA
+        startMatch(inviterSocket, socket, 'friendly');
+      } else {
+        socket.emit('friend_error', 'Convite expirou (usuário desconectou).');
+      }
+    }
+  });
+
   // --- MATCHMAKING ---
   socket.on('find_match', (incomingData) => {
     const mode = (incomingData?.mode?.toLowerCase() === 'friendly') ? 'friendly' : 'ranked';
 
-    // Remove se já estiver em alguma fila (evita duplicação)
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
 
@@ -230,9 +292,9 @@ io.on('connection', (socket) => {
       if (opponent) startMatch(opponent, socket, 'friendly');
       else queues.friendly.push(socket);
     } else {
-      socket.joinedAt = Date.now(); // Marca hora de entrada para expansão do elo
+      socket.joinedAt = Date.now();
       queues.ranked.push(socket);
-      findMatchDynamic(); // Tenta parear na hora
+      findMatchDynamic();
     }
     socket.emit('status', `Buscando oponente...`);
   });
@@ -246,11 +308,9 @@ io.on('connection', (socket) => {
   socket.on('game_move', (msg) => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
-      // Pequena validação para garantir que estamos repassando um objeto
       if (msg && typeof msg === 'object') {
         const match = activeMatches[rId];
         match.moveHistory.push(msg);
-        // Broadcast para a sala (incluindo o oponente)
         socket.to(rId).emit('game_message', msg);
       }
     }
@@ -260,9 +320,7 @@ io.on('connection', (socket) => {
     if (socket.roomId) socket.to(socket.roomId).emit('sync_game_state', data);
   });
 
-  // ============================================================
   // --- REVANCHE ---
-  // ============================================================
   socket.on('request_rematch', () => {
     if (socket.roomId && activeMatches[socket.roomId]) {
       socket.to(socket.roomId).emit('game_message', { type: 'rematch_requested' });
@@ -277,39 +335,25 @@ io.on('connection', (socket) => {
         match.moveHistory = [];
         match.p1Time = 1020;
         match.p2Time = 1020;
-        // Reinicia a partida na mesma sala
         io.to(rId).emit('game_message', { type: 'rematch_start' });
       } else {
         io.to(rId).emit('game_message', { type: 'rematch_failed' });
-        // Se a revanche for negada, removemos a partida imediatamente
-        // para evitar punição de disconnect
         delete activeMatches[rId];
       }
     }
   });
 
-  // ============================================================
-  // --- NOVO: CANCELAMENTO DE REVANCHE (BLINDADO) ---
-  // ============================================================
   socket.on('cancel_rematch', () => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
-      // 1. Avisa TODOS na sala (quem pediu e quem ignorou) que falhou
       io.to(rId).emit('game_message', { type: 'rematch_failed' });
-
-      // [BLINDAGEM ADICIONADA]
-      // Se havia um timeout de desconexão (oponente quitou), cancela ele agora
-      // para evitar que ele tente acessar a sala deletada depois.
       if (reconnectionTimeouts[rId]) {
         clearTimeout(reconnectionTimeouts[rId]);
         delete reconnectionTimeouts[rId];
       }
-
-      // 2. Deleta a partida para ninguém perder pontos ao sair
       delete activeMatches[rId];
     }
   });
-  // ============================================================
 
   // --- GAME OVER ---
   socket.on('game_over_report', async (data) => {
@@ -317,7 +361,6 @@ io.on('connection', (socket) => {
     if (!rId || !activeMatches[rId]) return;
     const match = activeMatches[rId];
 
-    // Log para debug no servidor
     console.log(`[GAME OVER] Sala ${rId} - Result: ${data.result}, Reason: ${data.reason}`);
 
     try {
@@ -332,7 +375,6 @@ io.on('connection', (socket) => {
         let newElo = Math.max(0, user.elo + delta);
         user.elo = newElo;
 
-        // Atualiza contadores de vitória/derrota
         const resLower = data.result?.toLowerCase() || '';
         if (resLower.includes('win') || resLower.includes('victory')) {
           user.wins++;
@@ -345,9 +387,6 @@ io.on('connection', (socket) => {
       }
     } catch (e) { console.error("Erro Elo Report:", e); }
 
-    // [MELHORIA DE COMPATIBILIDADE]
-    // Enviamos 'reason' e 'result' na raiz do objeto também,
-    // pois o cliente verifica msg['reason'] diretamente.
     socket.to(rId).emit('game_message', {
       type: 'game_over',
       reason: data.reason,
@@ -357,21 +396,20 @@ io.on('connection', (socket) => {
   });
 
   // --- DESCONEXÃO ---
-  // --- DESCONEXÃO ---
   socket.on('disconnect', async () => {
+    delete onlineUsers[socket.user.id]; // Remove da lista online
+
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
 
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
-      // Avisa o oponente que o jogador caiu
       socket.to(rId).emit('game_message', { type: 'opponent_disconnected' });
 
       reconnectionTimeouts[rId] = setTimeout(async () => {
         if (activeMatches[rId]) {
           const match = activeMatches[rId];
 
-          // Envia Game Over por W.O.
           io.to(rId).emit('game_message', {
             type: 'game_over',
             reason: 'opponent_disconnected',
@@ -380,16 +418,12 @@ io.on('connection', (socket) => {
 
           if (match.mode === 'ranked') {
             try {
-              // 1. Identificar quem é quem
               const isP1Quitter = match.p1.id === socket.user.id;
               const quitterId = socket.user.id;
               const winnerId = isP1Quitter ? match.p2.id : match.p1.id;
 
-              // -----------------------------------------------------------
-              // A. PUNIR QUEM SAIU (Lógica Original Mantida)
-              // -----------------------------------------------------------
               const quitter = await User.findOne({ userId: quitterId });
-              let quitterElo = 600; // Valor padrão caso não ache
+              let quitterElo = 600;
 
               if (quitter) {
                 quitterElo = quitter.elo;
@@ -399,16 +433,12 @@ io.on('connection', (socket) => {
                 console.log(`[ELO] Quitter ${quitter.username} perdeu 17 pts.`);
               }
 
-              // -----------------------------------------------------------
-              // B. PREMIAR O VENCEDOR (Nova Lógica Adicionada)
-              // -----------------------------------------------------------
               const winner = await User.findOne({ userId: winnerId });
               if (winner) {
-                // Calcula quanto o vencedor ganha baseando-se no Elo de quem saiu
                 const delta = calculateEloDelta(
                   'win',
                   'opponent_disconnected',
-                  0, 0, // Placar irrelevante no W.O.
+                  0, 0,
                   winner.elo,
                   quitterElo
                 );
@@ -418,10 +448,6 @@ io.on('connection', (socket) => {
                 await winner.save();
 
                 console.log(`[ELO] Winner ${winner.username} ganhou ${delta} pts.`);
-
-                // Envia atualização de Elo APENAS para o vencedor que ainda está na sala
-                // Usamos socket.to(rId) porque 'socket' é quem saiu. 
-                // O .to(rId) manda para os outros na sala (o vencedor).
                 socket.to(rId).emit('elo_update', {
                   newElo: winner.elo,
                   delta,
