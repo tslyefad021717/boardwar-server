@@ -20,8 +20,7 @@ mongoose.connect(mongoURI)
   .then(() => console.log("✅ Conectado ao MongoDB Atlas"))
   .catch(err => console.error("❌ Erro MongoDB:", err.message));
 
-// --- MAPA DE USUÁRIOS ONLINE (NOVO) ---
-// Formato: { "userId": "socketId" }
+// Mapa global: { "userId": "socketId" }
 const onlineUsers = {};
 
 const userSchema = new mongoose.Schema({
@@ -30,8 +29,7 @@ const userSchema = new mongoose.Schema({
   elo: { type: Number, default: 600 },
   wins: { type: Number, default: 0 },
   losses: { type: Number, default: 0 },
-  // --- NOVO CAMPO: AMIGOS ---
-  friends: [{ type: String }], // Lista de userIds
+  friends: [{ type: String }],
   createdAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', userSchema);
@@ -60,7 +58,6 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
   const res = result?.toLowerCase() || '';
   const rea = reason?.toLowerCase() || '';
 
-  // --- LÓGICA DE VITÓRIA ---
   if (res === 'win' || res === 'victory' || res === 'win_by_wo') {
     switch (rea) {
       case 'regicide': delta = 10; break;
@@ -72,21 +69,13 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
       case 'time_out': delta = 9; break;
       default: delta = 5;
     }
-
-    // Bônus Davi vs Golias
     if (oppElo > myElo) {
       const diffPercent = ((oppElo - myElo) / myElo) * 100;
-      if (diffPercent >= 20) {
-        delta += 3;
-      } else if (diffPercent >= 15) {
-        delta += 1;
-      }
+      if (diffPercent >= 20) delta += 3;
+      else if (diffPercent >= 15) delta += 1;
     }
     return delta;
-  }
-
-  // --- LÓGICA DE DERROTA ---
-  else {
+  } else {
     if (rea === 'quit' || rea === 'opponent_disconnected') return -17;
     if (rea === 'afk') return -10;
     if (rea === 'surrender') return -10;
@@ -109,16 +98,14 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
       if (mmrDiff >= 20) modifiers -= 2;
       else if (mmrDiff >= 15) modifiers -= 1;
     }
-
     delta = baseLoss + modifiers;
     return delta > 0 ? 0 : delta;
   }
 }
 
 // ===========================================================================
-// 4. LÓGICA DE MATCHMAKING DINÂMICO
+// 4. MATCHMAKING
 // ===========================================================================
-
 function findMatchDynamic() {
   const mode = 'ranked';
   const queue = queues[mode];
@@ -148,11 +135,10 @@ function findMatchDynamic() {
     }
   }
 }
-
 setInterval(findMatchDynamic, 5000);
 
 // ===========================================================================
-// 5. SOCKET.IO
+// 5. SOCKET.IO (CORREÇÃO DE BUGS AQUI)
 // ===========================================================================
 
 io.use((socket, next) => {
@@ -169,7 +155,19 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   console.log(`[CONNECT] ${socket.user.name} (${socket.id})`);
 
-  // --- REGISTRA ONLINE ---
+  // --- CORREÇÃO CRÍTICA: MATAR CONEXÕES FANTASMAS ---
+  // Se esse usuário já tem um socket aberto, desconecte o antigo.
+  // Isso impede que ele receba mensagens duplicadas (tiro duplo, bugs).
+  const oldSocketId = onlineUsers[socket.user.id];
+  if (oldSocketId && oldSocketId !== socket.id) {
+    const oldSocket = io.sockets.sockets.get(oldSocketId);
+    if (oldSocket) {
+      console.log(`[FIX] Desconectando fantasma de ${socket.user.name}`);
+      oldSocket.disconnect(true);
+    }
+  }
+
+  // Agora sim, registra o novo
   onlineUsers[socket.user.id] = socket.id;
 
   // --- RECONEXÃO ---
@@ -185,6 +183,13 @@ io.on('connection', (socket) => {
       clearTimeout(reconnectionTimeouts[existingRoomId]);
       delete reconnectionTimeouts[existingRoomId];
     }
+    // Garante que só o socket novo fique na sala (limpeza extra)
+    const room = io.sockets.adapter.rooms.get(existingRoomId);
+    if (room && room.size > 2) {
+      // Lógica opcional: se tiver mais de 2 pessoas na sala x1, algo está errado.
+      console.log(`[ALERTA] Sala ${existingRoomId} tem mais de 2 sockets!`);
+    }
+
     socket.to(existingRoomId).emit('game_message', { type: 'opponent_reconnected' });
     socket.to(existingRoomId).emit('request_state_for_reconnection');
   }
@@ -211,8 +216,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // --- SISTEMA DE AMIGOS (NOVO) ---
-  // 1. Adicionar Amigo (COM AVISO DE RETORNO)
+  // --- AMIGOS ---
   socket.on('add_friend', async (targetName) => {
     try {
       const target = await User.findOne({ username: targetName });
@@ -229,14 +233,10 @@ io.on('connection', (socket) => {
       await me.save();
       socket.emit('friend_success', `Agora você segue ${target.username}!`);
 
-      // --- NOVO: AVISA O OUTRO JOGADOR ---
       const targetSocketId = onlineUsers[target.userId];
       if (targetSocketId) {
-        // Envia apenas o nome de quem adicionou
         io.to(targetSocketId).emit('friend_added_you', { name: socket.user.name });
       }
-      // -----------------------------------
-
     } catch (e) { console.error(e); }
   });
 
@@ -253,7 +253,7 @@ io.on('connection', (socket) => {
         name: f.username,
         elo: f.elo,
         rank: getRankName(f.elo),
-        isOnline: !!onlineUsers[f.userId] // True se estiver no mapa de online
+        isOnline: !!onlineUsers[f.userId]
       }));
 
       socket.emit('friends_list_data', processedList);
@@ -277,14 +277,11 @@ io.on('connection', (socket) => {
     if (inviterSocketId) {
       const inviterSocket = io.sockets.sockets.get(inviterSocketId);
       if (inviterSocket) {
-        // Remove das filas se estiverem
         queues.ranked = queues.ranked.filter(s => s.id !== socket.id && s.id !== inviterSocket.id);
         queues.friendly = queues.friendly.filter(s => s.id !== socket.id && s.id !== inviterSocket.id);
-
-        // Inicia partida AMISTOSA
         startMatch(inviterSocket, socket, 'friendly');
       } else {
-        socket.emit('friend_error', 'Convite expirou (usuário desconectou).');
+        socket.emit('friend_error', 'Convite expirou.');
       }
     }
   });
@@ -406,7 +403,11 @@ io.on('connection', (socket) => {
 
   // --- DESCONEXÃO ---
   socket.on('disconnect', async () => {
-    delete onlineUsers[socket.user.id]; // Remove da lista online
+    // Só remove do mapa online se o socket que caiu for o ATUAL registrado
+    // (Isso evita apagar o socket novo se ele conectou muito rápido)
+    if (onlineUsers[socket.user.id] === socket.id) {
+      delete onlineUsers[socket.user.id];
+    }
 
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
@@ -444,18 +445,10 @@ io.on('connection', (socket) => {
 
               const winner = await User.findOne({ userId: winnerId });
               if (winner) {
-                const delta = calculateEloDelta(
-                  'win',
-                  'opponent_disconnected',
-                  0, 0,
-                  winner.elo,
-                  quitterElo
-                );
-
+                const delta = calculateEloDelta('win', 'opponent_disconnected', 0, 0, winner.elo, quitterElo);
                 winner.elo += delta;
                 winner.wins++;
                 await winner.save();
-
                 console.log(`[ELO] Winner ${winner.username} ganhou ${delta} pts.`);
                 socket.to(rId).emit('elo_update', {
                   newElo: winner.elo,
@@ -463,12 +456,10 @@ io.on('connection', (socket) => {
                   rank: getRankName(winner.elo)
                 });
               }
-
             } catch (e) {
               console.error("Erro ao atualizar Elos na desconexão:", e);
             }
           }
-
           delete activeMatches[rId];
           delete reconnectionTimeouts[rId];
         }
