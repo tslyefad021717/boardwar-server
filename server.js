@@ -46,10 +46,10 @@ const reconnectionTimeouts = {};
 // ===========================================================================
 function getRankName(elo) {
   if (elo < 500) return "Camponês";
-  if (elo < 1000) return "Soldado";
-  if (elo < 1500) return "Veterano";
-  if (elo < 2000) return "Comandante";
-  if (elo < 2500) return "General";
+  if (elo < 750) return "Soldado";
+  if (elo < 1000) return "Veterano";
+  if (elo < 1500) return "Comandante";
+  if (elo < 2000) return "General";
   return "Lenda de Guerra";
 }
 
