@@ -104,7 +104,7 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
 }
 
 // ===========================================================================
-// 4. MATCHMAKING
+// 4. MATCHMAKING (SUA LÓGICA ORIGINAL RESTAURADA)
 // ===========================================================================
 function findMatchDynamic() {
   const mode = 'ranked';
@@ -118,18 +118,25 @@ function findMatchDynamic() {
 
       if (p1.user.id === p2.user.id) continue;
 
+      // --- SUA LÓGICA DE PORCENTAGEM (MANTIDA) ---
       const waitTime = (Date.now() - Math.min(p1.joinedAt, p2.joinedAt)) / 1000;
+
       let marginPercent = 5 + (Math.floor(waitTime / 30) * 5);
-      if (marginPercent > 30) marginPercent = 30;
+      if (marginPercent > 30) marginPercent = 30; // Trava em 30% (Isso protege o Elo 600 do 2500)
 
       const eloDiff = Math.abs(p1.user.elo - p2.user.elo);
       const avgElo = (p1.user.elo + p2.user.elo) / 2;
       const maxAllowedDiff = avgElo * (marginPercent / 100);
 
+      // Só pareia se passar na sua regra estrita
       if (eloDiff <= maxAllowedDiff) {
+        // Remove da fila
         queues[mode].splice(j, 1);
         queues[mode].splice(i, 1);
+
         startMatch(p1, p2, mode);
+
+        // Reinicia o loop
         return findMatchDynamic();
       }
     }
@@ -138,7 +145,7 @@ function findMatchDynamic() {
 setInterval(findMatchDynamic, 5000);
 
 // ===========================================================================
-// 5. SOCKET.IO (CORREÇÃO DE BUGS AQUI)
+// 5. SOCKET.IO
 // ===========================================================================
 
 io.use((socket, next) => {
@@ -147,7 +154,7 @@ io.use((socket, next) => {
     id: auth.userId || uuidv4(),
     name: auth.name || 'Guerreiro',
     skins: auth.skins || {},
-    elo: 600
+    elo: 600 // Valor padrão (Será atualizado antes de entrar na fila)
   };
   next();
 });
@@ -155,9 +162,6 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   console.log(`[CONNECT] ${socket.user.name} (${socket.id})`);
 
-  // --- CORREÇÃO CRÍTICA: MATAR CONEXÕES FANTASMAS ---
-  // Se esse usuário já tem um socket aberto, desconecte o antigo.
-  // Isso impede que ele receba mensagens duplicadas (tiro duplo, bugs).
   const oldSocketId = onlineUsers[socket.user.id];
   if (oldSocketId && oldSocketId !== socket.id) {
     const oldSocket = io.sockets.sockets.get(oldSocketId);
@@ -167,7 +171,6 @@ io.on('connection', (socket) => {
     }
   }
 
-  // Agora sim, registra o novo
   onlineUsers[socket.user.id] = socket.id;
 
   // --- RECONEXÃO ---
@@ -183,13 +186,6 @@ io.on('connection', (socket) => {
       clearTimeout(reconnectionTimeouts[existingRoomId]);
       delete reconnectionTimeouts[existingRoomId];
     }
-    // Garante que só o socket novo fique na sala (limpeza extra)
-    const room = io.sockets.adapter.rooms.get(existingRoomId);
-    if (room && room.size > 2) {
-      // Lógica opcional: se tiver mais de 2 pessoas na sala x1, algo está errado.
-      console.log(`[ALERTA] Sala ${existingRoomId} tem mais de 2 sockets!`);
-    }
-
     socket.to(existingRoomId).emit('game_message', { type: 'opponent_reconnected' });
     socket.to(existingRoomId).emit('request_state_for_reconnection');
   }
@@ -206,8 +202,11 @@ io.on('connection', (socket) => {
         { userId }, { username },
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
+
+      // Atualiza o socket na memória
       socket.user.name = user.username;
       socket.user.elo = user.elo;
+
       socket.emit('register_response', {
         success: true, username: user.username, elo: user.elo, rank: getRankName(user.elo)
       });
@@ -286,8 +285,8 @@ io.on('connection', (socket) => {
     }
   });
 
-  // --- MATCHMAKING ---
-  socket.on('find_match', (incomingData) => {
+  // --- MATCHMAKING (COM ATUALIZAÇÃO FORÇADA DE ELO) ---
+  socket.on('find_match', async (incomingData) => { // Async obrigatório
     const mode = (incomingData?.mode?.toLowerCase() === 'friendly') ? 'friendly' : 'ranked';
 
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
@@ -298,8 +297,22 @@ io.on('connection', (socket) => {
       if (opponent) startMatch(opponent, socket, 'friendly');
       else queues.friendly.push(socket);
     } else {
+      // --- CORREÇÃO DO BUG (2500 vs 600) ---
+      // Força a leitura do Elo real do banco AGORA.
+      // Assim, se o cache estiver errado (600), ele corrige para 2500 antes de entrar na fila.
+      try {
+        const user = await User.findOne({ userId: socket.user.id });
+        if (user) {
+          socket.user.elo = user.elo;
+          socket.user.name = user.username;
+          console.log(`[QUEUE] ${user.username} entrando com Elo ATUALIZADO: ${user.elo}`);
+        }
+      } catch (err) { console.error("Erro ao atualizar Elo na fila:", err); }
+
       socket.joinedAt = Date.now();
       queues.ranked.push(socket);
+
+      // Chama sua lógica de porcentagem original
       findMatchDynamic();
     }
     socket.emit('status', `Buscando oponente...`);
@@ -403,8 +416,6 @@ io.on('connection', (socket) => {
 
   // --- DESCONEXÃO ---
   socket.on('disconnect', async () => {
-    // Só remove do mapa online se o socket que caiu for o ATUAL registrado
-    // (Isso evita apagar o socket novo se ele conectou muito rápido)
     if (onlineUsers[socket.user.id] === socket.id) {
       delete onlineUsers[socket.user.id];
     }
@@ -450,11 +461,15 @@ io.on('connection', (socket) => {
                 winner.wins++;
                 await winner.save();
                 console.log(`[ELO] Winner ${winner.username} ganhou ${delta} pts.`);
-                socket.to(rId).emit('elo_update', {
-                  newElo: winner.elo,
-                  delta,
-                  rank: getRankName(winner.elo)
-                });
+
+                const winnerSocketId = onlineUsers[winner.userId];
+                if (winnerSocketId) {
+                  io.to(winnerSocketId).emit('elo_update', {
+                    newElo: winner.elo,
+                    delta,
+                    rank: getRankName(winner.elo)
+                  });
+                }
               }
             } catch (e) {
               console.error("Erro ao atualizar Elos na desconexão:", e);
