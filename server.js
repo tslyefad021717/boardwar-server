@@ -119,10 +119,14 @@ function findMatchDynamic() {
       if (p1.user.id === p2.user.id) continue;
 
       // --- SUA LÓGICA DE PORCENTAGEM (MANTIDA) ---
+      // --- NOVA LÓGICA: DE 10% ATÉ 30% ---
       const waitTime = (Date.now() - Math.min(p1.joinedAt, p2.joinedAt)) / 1000;
 
-      let marginPercent = 5 + (Math.floor(waitTime / 30) * 5);
-      if (marginPercent > 30) marginPercent = 30; // Trava em 30% (Isso protege o Elo 600 do 2500)
+      // Começa em 10 e sobe 5 a cada 30 segundos
+      let marginPercent = 10 + (Math.floor(waitTime / 30) * 5);
+
+      // Trava o limite máximo em 30%
+      if (marginPercent > 30) marginPercent = 30;
 
       const eloDiff = Math.abs(p1.user.elo - p2.user.elo);
       const avgElo = (p1.user.elo + p2.user.elo) / 2;
