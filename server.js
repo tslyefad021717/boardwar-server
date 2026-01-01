@@ -104,7 +104,7 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
 }
 
 // ===========================================================================
-// 4. MATCHMAKING (SUA LÓGICA ORIGINAL RESTAURADA)
+// 4. MATCHMAKING (AJUSTADO: 10% -> 30%)
 // ===========================================================================
 function findMatchDynamic() {
   const mode = 'ranked';
@@ -118,11 +118,10 @@ function findMatchDynamic() {
 
       if (p1.user.id === p2.user.id) continue;
 
-      // --- SUA LÓGICA DE PORCENTAGEM (MANTIDA) ---
       // --- NOVA LÓGICA: DE 10% ATÉ 30% ---
       const waitTime = (Date.now() - Math.min(p1.joinedAt, p2.joinedAt)) / 1000;
 
-      // Começa em 10 e sobe 5 a cada 30 segundos
+      // Começa em 10% e sobe 5% a cada 30 segundos
       let marginPercent = 10 + (Math.floor(waitTime / 30) * 5);
 
       // Trava o limite máximo em 30%
@@ -132,7 +131,7 @@ function findMatchDynamic() {
       const avgElo = (p1.user.elo + p2.user.elo) / 2;
       const maxAllowedDiff = avgElo * (marginPercent / 100);
 
-      // Só pareia se passar na sua regra estrita
+      // Só pareia se passar na regra estrita
       if (eloDiff <= maxAllowedDiff) {
         // Remove da fila
         queues[mode].splice(j, 1);
@@ -177,19 +176,24 @@ io.on('connection', (socket) => {
 
   onlineUsers[socket.user.id] = socket.id;
 
-  // --- RECONEXÃO ---
+  // --- RECONEXÃO BLINDADA ---
   const existingRoomId = Object.keys(activeMatches).find(roomId => {
     const match = activeMatches[roomId];
     return match && (match.p1.id === socket.user.id || match.p2.id === socket.user.id);
   });
 
   if (existingRoomId) {
+    console.log(`[RECONNECT] Usuário ${socket.user.name} retornou à sala ${existingRoomId}`);
     socket.roomId = existingRoomId;
     socket.join(existingRoomId);
+
+    // CORREÇÃO: Garante o cancelamento do Timer de desconexão ao voltar
     if (reconnectionTimeouts[existingRoomId]) {
+      console.log(`[RECONNECT] Timer de desconexão CANCELADO para sala ${existingRoomId}`);
       clearTimeout(reconnectionTimeouts[existingRoomId]);
       delete reconnectionTimeouts[existingRoomId];
     }
+
     socket.to(existingRoomId).emit('game_message', { type: 'opponent_reconnected' });
     socket.to(existingRoomId).emit('request_state_for_reconnection');
   }
@@ -301,9 +305,7 @@ io.on('connection', (socket) => {
       if (opponent) startMatch(opponent, socket, 'friendly');
       else queues.friendly.push(socket);
     } else {
-      // --- CORREÇÃO DO BUG (2500 vs 600) ---
-      // Força a leitura do Elo real do banco AGORA.
-      // Assim, se o cache estiver errado (600), ele corrige para 2500 antes de entrar na fila.
+      // --- ATUALIZAÇÃO DE ELO NA FILA ---
       try {
         const user = await User.findOne({ userId: socket.user.id });
         if (user) {
@@ -316,7 +318,7 @@ io.on('connection', (socket) => {
       socket.joinedAt = Date.now();
       queues.ranked.push(socket);
 
-      // Chama sua lógica de porcentagem original
+      // Chama a lógica dinâmica
       findMatchDynamic();
     }
     socket.emit('status', `Buscando oponente...`);
@@ -378,10 +380,19 @@ io.on('connection', (socket) => {
     }
   });
 
-  // --- GAME OVER ---
+  // --- GAME OVER BLINDADO ---
   socket.on('game_over_report', async (data) => {
     const rId = socket.roomId;
     if (!rId || !activeMatches[rId]) return;
+
+    // 1. CANCELA O TIMER DE DESCONEXÃO SE HOUVER VITÓRIA REAL
+    // Isso impede que um "fantasma" cause derrota por WO depois do jogo acabar.
+    if (reconnectionTimeouts[rId]) {
+      console.log(`[GAME OVER] Cancelando timer de desconexão da sala ${rId} pois houve resultado legítimo.`);
+      clearTimeout(reconnectionTimeouts[rId]);
+      delete reconnectionTimeouts[rId];
+    }
+
     const match = activeMatches[rId];
 
     console.log(`[GAME OVER] Sala ${rId} - Result: ${data.result}, Reason: ${data.reason}`);
@@ -418,8 +429,18 @@ io.on('connection', (socket) => {
     });
   });
 
-  // --- DESCONEXÃO ---
+  // --- DESCONEXÃO BLINDADA (IGNORA FANTASMAS) ---
   socket.on('disconnect', async () => {
+    // 1. VERIFICAÇÃO DE FANTASMA (CRUCIAL!)
+    // Se o ID que está no mapa global (onlineUsers) for DIFERENTE do ID deste socket,
+    // significa que este é um socket velho sendo morto, e o usuário JÁ está em outro socket ativo.
+    // Ignoramos completamente para não disparar derrota por WO.
+    const currentSocketId = onlineUsers[socket.user.id];
+    if (currentSocketId && currentSocketId !== socket.id) {
+      console.log(`[IGNORE] Desconexão ignorada para ${socket.user.name} (Socket velho caindo, novo já ativo).`);
+      return;
+    }
+
     if (onlineUsers[socket.user.id] === socket.id) {
       delete onlineUsers[socket.user.id];
     }
@@ -429,10 +450,15 @@ io.on('connection', (socket) => {
 
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
+      console.log(`[DISCONNECT] Usuário ${socket.user.name} caiu da sala ${rId}. Iniciando timer...`);
       socket.to(rId).emit('game_message', { type: 'opponent_disconnected' });
 
+      // Timer aumentado para 25s para dar tempo de trocar Wi-Fi/4G
       reconnectionTimeouts[rId] = setTimeout(async () => {
-        if (activeMatches[rId]) {
+        // Verifica novamente se o usuário não voltou antes de declarar derrota
+        const isUserBack = onlineUsers[socket.user.id];
+
+        if (activeMatches[rId] && !isUserBack) {
           const match = activeMatches[rId];
 
           io.to(rId).emit('game_message', {
@@ -481,8 +507,10 @@ io.on('connection', (socket) => {
           }
           delete activeMatches[rId];
           delete reconnectionTimeouts[rId];
+        } else {
+          console.log(`[TIMEOUT] Cancelado para sala ${rId}. Usuário voltou ou jogo acabou.`);
         }
-      }, 15000);
+      }, 25000); // 25 Segundos de tolerância
     }
   });
 });
