@@ -104,7 +104,7 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
 }
 
 // ===========================================================================
-// 4. MATCHMAKING (AJUSTADO: 10% -> 30%)
+// 4. MATCHMAKING (10% -> 30%)
 // ===========================================================================
 function findMatchDynamic() {
   const mode = 'ranked';
@@ -177,25 +177,25 @@ io.on('connection', (socket) => {
   onlineUsers[socket.user.id] = socket.id;
 
   // --- RECONEXÃO BLINDADA ---
+  // --- RECONEXÃO BLINDADA (DENTRO DO io.on('connection')) ---
   const existingRoomId = Object.keys(activeMatches).find(roomId => {
     const match = activeMatches[roomId];
     return match && (match.p1.id === socket.user.id || match.p2.id === socket.user.id);
   });
 
   if (existingRoomId) {
-    console.log(`[RECONNECT] Usuário ${socket.user.name} retornou à sala ${existingRoomId}`);
+    console.log(`[RECONNECT] Usuário ${socket.user.name} voltou após oscilação.`);
     socket.roomId = existingRoomId;
     socket.join(existingRoomId);
 
-    // CORREÇÃO: Garante o cancelamento do Timer de desconexão ao voltar
     if (reconnectionTimeouts[existingRoomId]) {
-      console.log(`[RECONNECT] Timer de desconexão CANCELADO para sala ${existingRoomId}`);
       clearTimeout(reconnectionTimeouts[existingRoomId]);
       delete reconnectionTimeouts[existingRoomId];
     }
 
+    // A MÁGICA: O servidor avisa os dois celulares para se sincronizarem agora!
+    io.to(existingRoomId).emit('game_message', { type: 'force_full_sync_request' });
     socket.to(existingRoomId).emit('game_message', { type: 'opponent_reconnected' });
-    socket.to(existingRoomId).emit('request_state_for_reconnection');
   }
 
   // --- REGISTRO ---
@@ -290,6 +290,41 @@ io.on('connection', (socket) => {
       } else {
         socket.emit('friend_error', 'Convite expirou.');
       }
+    }
+  });
+
+  // =================================================================
+  // [NOVO] LEADERBOARD (RANKING MUNDIAL)
+  // =================================================================
+  socket.on('get_leaderboard', async () => {
+    try {
+      // 1. Busca os Top 100 ordenados por Elo
+      const top100 = await User.find({})
+        .sort({ elo: -1 })
+        .limit(100)
+        .select('username elo userId');
+
+      // 2. Descobre a posição do usuário atual
+      const myUser = await User.findOne({ userId: socket.user.id });
+      let myRank = 0;
+      let myElo = 600;
+
+      if (myUser) {
+        myElo = myUser.elo;
+        // Conta quantos têm Elo MAIOR que o meu
+        const countAbove = await User.countDocuments({ elo: { $gt: myElo } });
+        myRank = countAbove + 1;
+      }
+
+      socket.emit('leaderboard_data', {
+        top100: top100.map(u => ({ name: u.username, elo: u.elo, id: u.userId })),
+        myRank: myRank,
+        myElo: myElo,
+        myName: myUser ? myUser.username : socket.user.name
+      });
+
+    } catch (e) {
+      console.error("Erro no Leaderboard:", e);
     }
   });
 
