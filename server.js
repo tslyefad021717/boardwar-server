@@ -296,37 +296,67 @@ io.on('connection', (socket) => {
   });
 
   // =================================================================
-  // [NOVO] LEADERBOARD (RANKING MUNDIAL)
+  // [CORREÇÃO] LEADERBOARD (RANKING MUNDIAL)
   // =================================================================
   socket.on('get_leaderboard', async () => {
     try {
-      // 1. Busca os Top 100 ordenados por Elo
+      // 1. Verificação de segurança: O banco está conectado?
+      if (mongoose.connection.readyState !== 1) {
+        console.error("⚠️ MongoDB não está conectado (ReadyState !== 1)");
+        throw new Error("Banco de dados desconectado/instável.");
+      }
+
+      // 2. Busca os Top 100 ordenados por Elo (Maior para menor)
+      // .lean() faz a consulta ser muito mais rápida pois retorna JSON puro
       const top100 = await User.find({})
         .sort({ elo: -1 })
         .limit(100)
-        .select('username elo userId');
+        .select('username elo userId')
+        .lean();
 
-      // 2. Descobre a posição do usuário atual
-      const myUser = await User.findOne({ userId: socket.user.id });
+      // 3. Descobre a posição do usuário que solicitou
+      // Se o socket não tiver ID, usa um dummy para não quebrar
+      const currentUserId = socket.user ? socket.user.id : "visitor";
+      const myUser = await User.findOne({ userId: currentUserId }).select('username elo').lean();
+
       let myRank = 0;
       let myElo = 600;
+      let myName = socket.user ? socket.user.name : "Guerreiro";
 
       if (myUser) {
         myElo = myUser.elo;
-        // Conta quantos têm Elo MAIOR que o meu
+        myName = myUser.username;
+        // Conta quantos jogadores têm Elo MAIOR que o meu
         const countAbove = await User.countDocuments({ elo: { $gt: myElo } });
         myRank = countAbove + 1;
       }
 
+      console.log(`[LEADERBOARD] Enviando ${top100.length} jogadores para ${myName}`);
+
+      // 4. Envia os dados (SUCESSO)
       socket.emit('leaderboard_data', {
-        top100: top100.map(u => ({ name: u.username, elo: u.elo, id: u.userId })),
+        top100: top100.map(u => ({
+          name: u.username,
+          elo: u.elo,
+          id: u.userId
+        })),
         myRank: myRank,
         myElo: myElo,
-        myName: myUser ? myUser.username : socket.user.name
+        myName: myName
       });
 
     } catch (e) {
-      console.error("Erro no Leaderboard:", e);
+      console.error("❌ Erro CRÍTICO no Leaderboard:", e.message);
+
+      // [MUITO IMPORTANTE] 
+      // Se der erro, enviamos uma lista vazia com os dados de fallback.
+      // Isso faz o 'loading' do Flutter sumir e mostrar a lista vazia, em vez de travar.
+      socket.emit('leaderboard_data', {
+        top100: [],
+        myRank: 0,
+        myElo: socket.user ? socket.user.elo : 600,
+        myName: socket.user ? socket.user.name : "Guerreiro"
+      });
     }
   });
 
