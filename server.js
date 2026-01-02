@@ -296,26 +296,30 @@ io.on('connection', (socket) => {
   });
 
   // =================================================================
-  // [CORREÇÃO] LEADERBOARD (RANKING MUNDIAL)
+  // [CORREÇÃO COM LOGS] LEADERBOARD
   // =================================================================
   socket.on('get_leaderboard', async () => {
+    console.log(`[LEADERBOARD] Solicitação recebida de ${socket.user.name}`);
+
     try {
-      // 1. Verificação de segurança: O banco está conectado?
+      // 1. Verificação de segurança
       if (mongoose.connection.readyState !== 1) {
-        console.error("⚠️ MongoDB não está conectado (ReadyState !== 1)");
+        console.error("⚠️ [LEADERBOARD] DB não conectado!");
         throw new Error("Banco de dados desconectado/instável.");
       }
 
-      // 2. Busca os Top 100 ordenados por Elo (Maior para menor)
-      // .lean() faz a consulta ser muito mais rápida pois retorna JSON puro
+      console.log(`[LEADERBOARD] Buscando TOP 100...`);
+
+      // 2. Busca TOP 100
       const top100 = await User.find({})
         .sort({ elo: -1 })
         .limit(100)
         .select('username elo userId')
         .lean();
 
-      // 3. Descobre a posição do usuário que solicitou
-      // Se o socket não tiver ID, usa um dummy para não quebrar
+      console.log(`[LEADERBOARD] Encontrados ${top100.length} jogadores.`);
+
+      // 3. Busca dados do usuário atual
       const currentUserId = socket.user ? socket.user.id : "visitor";
       const myUser = await User.findOne({ userId: currentUserId }).select('username elo').lean();
 
@@ -326,14 +330,13 @@ io.on('connection', (socket) => {
       if (myUser) {
         myElo = myUser.elo;
         myName = myUser.username;
-        // Conta quantos jogadores têm Elo MAIOR que o meu
+        // Conta rank
         const countAbove = await User.countDocuments({ elo: { $gt: myElo } });
         myRank = countAbove + 1;
       }
 
-      console.log(`[LEADERBOARD] Enviando ${top100.length} jogadores para ${myName}`);
+      console.log(`[LEADERBOARD] Enviando dados para cliente...`);
 
-      // 4. Envia os dados (SUCESSO)
       socket.emit('leaderboard_data', {
         top100: top100.map(u => ({
           name: u.username,
@@ -345,12 +348,12 @@ io.on('connection', (socket) => {
         myName: myName
       });
 
-    } catch (e) {
-      console.error("❌ Erro CRÍTICO no Leaderboard:", e.message);
+      console.log(`[LEADERBOARD] Dados enviados com sucesso!`);
 
-      // [MUITO IMPORTANTE] 
-      // Se der erro, enviamos uma lista vazia com os dados de fallback.
-      // Isso faz o 'loading' do Flutter sumir e mostrar a lista vazia, em vez de travar.
+    } catch (e) {
+      console.error("❌ [LEADERBOARD] Erro:", e.message);
+
+      // Fallback seguro
       socket.emit('leaderboard_data', {
         top100: [],
         myRank: 0,
