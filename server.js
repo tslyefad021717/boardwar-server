@@ -177,7 +177,6 @@ io.on('connection', (socket) => {
   onlineUsers[socket.user.id] = socket.id;
 
   // --- RECONEXÃO BLINDADA ---
-  // --- RECONEXÃO BLINDADA (DENTRO DO io.on('connection')) ---
   const existingRoomId = Object.keys(activeMatches).find(roomId => {
     const match = activeMatches[roomId];
     return match && (match.p1.id === socket.user.id || match.p2.id === socket.user.id);
@@ -247,13 +246,16 @@ io.on('connection', (socket) => {
     } catch (e) { console.error(e); }
   });
 
+  // --- [CORREÇÃO] LISTA DE AMIGOS COM RANKING ---
   socket.on('get_friends_list', async () => {
     try {
       const me = await User.findOne({ userId: socket.user.id });
       if (!me || !me.friends) return socket.emit('friends_list_data', []);
 
+      // Agora ordena por Elo decrescente (-1)
       const friendsData = await User.find({ userId: { $in: me.friends } })
-        .select('userId username elo');
+        .select('userId username elo')
+        .sort({ elo: -1 });
 
       const processedList = friendsData.map(f => ({
         id: f.userId,
@@ -371,7 +373,45 @@ io.on('connection', (socket) => {
       if (msg && typeof msg === 'object') {
         const match = activeMatches[rId];
         match.moveHistory.push(msg);
+
+        // --- [NOVO] ATUALIZA O TURNO SE O CLIENTE DISSE QUE ACABOU ---
+        if (msg.turnEnded === true) {
+          match.isPlayer1Turn = !match.isPlayer1Turn;
+        }
+        // -------------------------------------------------------------
+
         socket.to(rId).emit('game_message', msg);
+      }
+    }
+  });
+
+  // --- [NOVO] ATUALIZAÇÃO DE TURNO NO SERVIDOR (TURN_PASS EXPLÍCITO) ---
+  socket.on('turn_pass', (data) => {
+    const rId = socket.roomId;
+    if (rId && activeMatches[rId]) {
+      // Inverte o turno no servidor
+      activeMatches[rId].isPlayer1Turn = !activeMatches[rId].isPlayer1Turn;
+
+      // Repassa para o oponente
+      socket.to(rId).emit('game_message', {
+        type: 'turn_pass',
+        p1Time: data.p1Time,
+        p2Time: data.p2Time
+      });
+    }
+  });
+
+  // --- [NOVO] O "DOUTOR DE TURNO" (CORREÇÃO AUTOMÁTICA DE DEADLOCK) ---
+  socket.on('check_turn_integrity', (clientThinkIsP1) => {
+    const rId = socket.roomId;
+    if (rId && activeMatches[rId]) {
+      const serverThinkIsP1 = activeMatches[rId].isPlayer1Turn;
+
+      // Se o cliente discorda do servidor sobre de quem é a vez
+      if (clientThinkIsP1 !== serverThinkIsP1) {
+        console.log(`[FIX] Desincronia de turno detectada na sala ${rId}. Forçando Sync.`);
+        // Força AMBOS a ressincronizarem para garantir
+        io.to(rId).emit('game_message', { type: 'force_full_sync_request' });
       }
     }
   });
@@ -395,6 +435,7 @@ io.on('connection', (socket) => {
         match.moveHistory = [];
         match.p1Time = 1020;
         match.p2Time = 1020;
+        match.isPlayer1Turn = true; // [NOVO] Reseta turno para P1
         io.to(rId).emit('game_message', { type: 'rematch_start' });
       } else {
         io.to(rId).emit('game_message', { type: 'rematch_failed' });
@@ -564,7 +605,11 @@ async function startMatch(p1, p2, mode) {
   activeMatches[roomId] = {
     p1: { id: p1.user.id, name: p1.user.name, elo: elo1 },
     p2: { id: p2.user.id, name: p2.user.name, elo: elo2 },
-    mode, moveHistory: [], p1Time: 1020, p2Time: 1020
+    mode,
+    moveHistory: [],
+    p1Time: 1020,
+    p2Time: 1020,
+    isPlayer1Turn: true // [NOVO] Controle de turno no servidor
   };
 
   p1.emit('match_found', { isPlayer1: true, opponent: { name: p2.user.name, elo: elo2, rank: getRankName(elo2) }, mode });
