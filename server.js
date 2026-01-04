@@ -183,18 +183,24 @@ io.on('connection', (socket) => {
   });
 
   if (existingRoomId) {
-    console.log(`[RECONNECT] Usuário ${socket.user.name} voltou após oscilação.`);
-    socket.roomId = existingRoomId;
-    socket.join(existingRoomId);
+    const match = activeMatches[existingRoomId];
+    // Se a partida já acabou (isFinished), não reconecta na sala, apenas limpa
+    if (match.isFinished) {
+      // Pode emitir algo se quiser, mas geralmente não faz nada
+    } else {
+      console.log(`[RECONNECT] Usuário ${socket.user.name} voltou após oscilação.`);
+      socket.roomId = existingRoomId;
+      socket.join(existingRoomId);
 
-    if (reconnectionTimeouts[existingRoomId]) {
-      clearTimeout(reconnectionTimeouts[existingRoomId]);
-      delete reconnectionTimeouts[existingRoomId];
+      if (reconnectionTimeouts[existingRoomId]) {
+        clearTimeout(reconnectionTimeouts[existingRoomId]);
+        delete reconnectionTimeouts[existingRoomId];
+      }
+
+      // A MÁGICA: O servidor avisa os dois celulares para se sincronizarem agora!
+      io.to(existingRoomId).emit('game_message', { type: 'force_full_sync_request' });
+      socket.to(existingRoomId).emit('game_message', { type: 'opponent_reconnected' });
     }
-
-    // A MÁGICA: O servidor avisa os dois celulares para se sincronizarem agora!
-    io.to(existingRoomId).emit('game_message', { type: 'force_full_sync_request' });
-    socket.to(existingRoomId).emit('game_message', { type: 'opponent_reconnected' });
   }
 
   // --- REGISTRO ---
@@ -466,6 +472,7 @@ io.on('connection', (socket) => {
         match.p1Time = 1020;
         match.p2Time = 1020;
         match.isPlayer1Turn = true; // [NOVO] Reseta turno para P1
+        match.isFinished = false; // [IMPORTANTE] Reseta a trava para o novo jogo
         io.to(rId).emit('game_message', { type: 'rematch_start' });
       } else {
         io.to(rId).emit('game_message', { type: 'rematch_failed' });
@@ -486,61 +493,135 @@ io.on('connection', (socket) => {
     }
   });
 
-  // --- GAME OVER BLINDADO ---
+  // =================================================================
+  // 6. GAME OVER BLINDADO (CORREÇÃO DE PONTUAÇÃO DUPLICADA)
+  // =================================================================
   socket.on('game_over_report', async (data) => {
     const rId = socket.roomId;
+
+    // 1. Verificação básica
     if (!rId || !activeMatches[rId]) return;
 
-    // 1. CANCELA O TIMER DE DESCONEXÃO SE HOUVER VITÓRIA REAL
-    // Isso impede que um "fantasma" cause derrota por WO depois do jogo acabar.
+    const match = activeMatches[rId];
+
+    // 🔴 TRAVA DE SEGURANÇA (O SEGREDO)
+    // Se a partida já foi marcada como finalizada, ignora qualquer pacote atrasado
+    if (match.isFinished) {
+      console.log(`[GAME OVER] Ignorando report duplicado da sala ${rId}`);
+      return;
+    }
+
+    // Marca imediatamente como finalizada na memória
+    match.isFinished = true;
+
+    // 2. CANCELA O TIMER DE DESCONEXÃO (SE HOUVER)
+    // Isso impede que, se o jogo acabar enquanto alguém estava "caído", dê WO.
     if (reconnectionTimeouts[rId]) {
-      console.log(`[GAME OVER] Cancelando timer de desconexão da sala ${rId} pois houve resultado legítimo.`);
+      console.log(`[GAME OVER] Cancelando timer de desconexão da sala ${rId}.`);
       clearTimeout(reconnectionTimeouts[rId]);
       delete reconnectionTimeouts[rId];
     }
 
-    const match = activeMatches[rId];
-
     console.log(`[GAME OVER] Sala ${rId} - Result: ${data.result}, Reason: ${data.reason}`);
 
     try {
-      const user = await User.findOne({ userId: socket.user.id });
-      if (user && match.mode === 'ranked') {
-        const isP1 = match.p1.id === socket.user.id;
-        const myStartElo = isP1 ? match.p1.elo : match.p2.elo;
-        const oppStartElo = isP1 ? match.p2.elo : match.p1.elo;
+      // Verifica se é RANKEADA para calcular Elo
+      if (match.mode === 'ranked') {
+        // Busca AMBOS os usuários para garantir a atualização única e atômica
+        const p1Data = match.p1;
+        const p2Data = match.p2;
 
-        const delta = calculateEloDelta(data.result, data.reason, data.myScore || 0, data.oppScore || 0, myStartElo, oppStartElo);
+        const user1 = await User.findOne({ userId: p1Data.id });
+        const user2 = await User.findOne({ userId: p2Data.id });
 
-        let newElo = Math.max(0, user.elo + delta);
-        user.elo = newElo;
+        if (user1 && user2) {
+          // Calcula o Delta base
+          const delta = calculateEloDelta(
+            data.result,
+            data.reason,
+            data.myScore || 0,
+            data.oppScore || 0,
+            user1.elo,
+            user2.elo
+          );
 
-        const resLower = data.result?.toLowerCase() || '';
-        if (resLower.includes('win') || resLower.includes('victory')) {
-          user.wins++;
-        } else {
-          user.losses++;
+          // Lógica para determinar quem é Vencedor e quem é Perdedor
+          // O report vem de `socket.user.id`. Se result == 'win', o reportador ganhou.
+          const isReporterP1 = (socket.user.id === p1Data.id);
+
+          let winner, loser;
+          let winnerEloBefore, loserEloBefore;
+
+          // Se o report diz que quem enviou ganhou:
+          if (['win', 'victory'].includes(data.result?.toLowerCase())) {
+            if (isReporterP1) { winner = user1; loser = user2; }
+            else { winner = user2; loser = user1; }
+          }
+          // Se o report diz que quem enviou perdeu (raro, mas possível):
+          else {
+            if (isReporterP1) { winner = user2; loser = user1; }
+            else { winner = user1; loser = user2; }
+          }
+
+          winnerEloBefore = winner.elo;
+          loserEloBefore = loser.elo;
+
+          // Recalcula o Delta final baseado no Vencedor vs Perdedor
+          // Isso garante que se o "fraco" ganhar do "forte", ganhe mais pts
+          // Usamos a função calculateEloDelta simulando um report de 'win' do vencedor
+          const realWinDelta = calculateEloDelta('win', data.reason, 0, 0, winnerEloBefore, loserEloBefore);
+
+          // Garante que seja positivo para o vencedor
+          const finalWinPoints = Math.abs(realWinDelta) > 0 ? Math.abs(realWinDelta) : 10;
+
+          // Calcula perda do perdedor (geralmente negativa ou zero)
+          const realLossDelta = calculateEloDelta('loss', data.reason, 0, 0, loserEloBefore, winnerEloBefore);
+
+          // Aplica mudanças
+          winner.elo += finalWinPoints;
+          winner.wins++;
+
+          loser.elo = Math.max(0, loser.elo + realLossDelta);
+          loser.losses++;
+
+          await winner.save();
+          await loser.save();
+
+          console.log(`[ELO] ${winner.username} (+${finalWinPoints}) vs ${loser.username} (${realLossDelta})`);
+
+          // Envia updates para os sockets conectados em tempo real
+          const s1 = onlineUsers[winner.userId];
+          const s2 = onlineUsers[loser.userId];
+
+          if (s1) io.to(s1).emit('elo_update', { newElo: winner.elo, delta: finalWinPoints, rank: getRankName(winner.elo) });
+          if (s2) io.to(s2).emit('elo_update', { newElo: loser.elo, delta: realLossDelta, rank: getRankName(loser.elo) });
         }
-
-        await user.save();
-        socket.emit('elo_update', { newElo: user.elo, delta, rank: getRankName(user.elo) });
       }
     } catch (e) { console.error("Erro Elo Report:", e); }
 
-    socket.to(rId).emit('game_message', {
+    // Envia mensagem final para a sala (Game Over Visual)
+    io.to(rId).emit('game_message', {
       type: 'game_over',
       reason: data.reason,
       result: data.result,
-      report_data: data
+      winnerId: socket.user.id // Quem mandou o report de vitória
     });
+
+    // 🔴 LIMPEZA FINAL DA MEMÓRIA
+    // Delay curto para garantir que a mensagem saia antes da sala morrer
+    setTimeout(() => {
+      if (activeMatches[rId]) {
+        delete activeMatches[rId];
+        console.log(`[CLEANUP] Sala ${rId} removida com sucesso.`);
+      }
+    }, 1000);
   });
 
-  // --- DESCONEXÃO BLINDADA (IGNORA FANTASMAS) ---
+  // =================================================================
+  // 7. DESCONEXÃO BLINDADA (IGNORA FANTASMAS)
+  // =================================================================
   socket.on('disconnect', async () => {
     // 1. VERIFICAÇÃO DE FANTASMA (CRUCIAL!)
-    // Se o ID que está no mapa global (onlineUsers) for DIFERENTE do ID deste socket,
-    // significa que este é um socket velho sendo morto, e o usuário JÁ está em outro socket ativo.
-    // Ignoramos completamente para não disparar derrota por WO.
     const currentSocketId = onlineUsers[socket.user.id];
     if (currentSocketId && currentSocketId !== socket.id) {
       console.log(`[IGNORE] Desconexão ignorada para ${socket.user.name} (Socket velho caindo, novo já ativo).`);
@@ -555,68 +636,75 @@ io.on('connection', (socket) => {
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
 
     const rId = socket.roomId;
-    if (rId && activeMatches[rId]) {
-      console.log(`[DISCONNECT] Usuário ${socket.user.name} caiu da sala ${rId}. Iniciando timer...`);
+
+    // Se estava em partida E a partida NÃO acabou ainda...
+    if (rId && activeMatches[rId] && !activeMatches[rId].isFinished) {
+      console.log(`[DISCONNECT] ${socket.user.name} caiu da sala ${rId}. Iniciando timer de 25s...`);
+
+      // Avisa o oponente que o cara caiu (para mostrar "Aguardando..." na tela)
       socket.to(rId).emit('game_message', { type: 'opponent_disconnected' });
 
-      // Timer aumentado para 25s para dar tempo de trocar Wi-Fi/4G
+      // ⏳ O TIMER DE TOLERÂNCIA (Aqui evita a derrota na micro-queda)
       reconnectionTimeouts[rId] = setTimeout(async () => {
-        // Verifica novamente se o usuário não voltou antes de declarar derrota
-        const isUserBack = onlineUsers[socket.user.id];
 
-        if (activeMatches[rId] && !isUserBack) {
-          const match = activeMatches[rId];
+        // Checa se a partida ainda existe e se não foi finalizada nesse meio tempo
+        if (activeMatches[rId]) {
 
-          io.to(rId).emit('game_message', {
-            type: 'game_over',
-            reason: 'opponent_disconnected',
-            result: 'win_by_wo'
-          });
+          // Se a partida JÁ ACABOU (isFinished), cancela tudo.
+          if (activeMatches[rId].isFinished) return;
 
-          if (match.mode === 'ranked') {
-            try {
-              const isP1Quitter = match.p1.id === socket.user.id;
-              const quitterId = socket.user.id;
-              const winnerId = isP1Quitter ? match.p2.id : match.p1.id;
+          // Verifica se o usuário voltou (está na lista de onlineUsers com novo socket?)
+          const isUserBack = onlineUsers[socket.user.id];
 
-              const quitter = await User.findOne({ userId: quitterId });
-              let quitterElo = 600;
+          if (!isUserBack) {
+            // AGORA SIM: Passaram 25s e ele não voltou. É derrota.
+            console.log(`[TIMEOUT] ${socket.user.name} não voltou. Declarando WO.`);
 
-              if (quitter) {
-                quitterElo = quitter.elo;
-                quitter.elo = Math.max(0, quitter.elo - 17);
-                quitter.losses++;
-                await quitter.save();
-                console.log(`[ELO] Quitter ${quitter.username} perdeu 17 pts.`);
-              }
+            const match = activeMatches[rId];
+            match.isFinished = true; // Ativa a trava agora
 
-              const winner = await User.findOne({ userId: winnerId });
-              if (winner) {
-                const delta = calculateEloDelta('win', 'opponent_disconnected', 0, 0, winner.elo, quitterElo);
-                winner.elo += delta;
-                winner.wins++;
-                await winner.save();
-                console.log(`[ELO] Winner ${winner.username} ganhou ${delta} pts.`);
+            // Avisa o oponente que ele ganhou por WO
+            io.to(rId).emit('game_message', {
+              type: 'game_over',
+              reason: 'opponent_disconnected',
+              result: 'win_by_wo'
+            });
 
-                const winnerSocketId = onlineUsers[winner.userId];
-                if (winnerSocketId) {
-                  io.to(winnerSocketId).emit('elo_update', {
-                    newElo: winner.elo,
-                    delta,
-                    rank: getRankName(winner.elo)
-                  });
+            // Lógica de punição por WO (Ranked)
+            if (match.mode === 'ranked') {
+              try {
+                const quitter = await User.findOne({ userId: socket.user.id });
+                const winnerId = (match.p1.id === socket.user.id) ? match.p2.id : match.p1.id;
+                const winner = await User.findOne({ userId: winnerId });
+
+                if (quitter && winner) {
+                  // Punição fixa de -17 por quitar
+                  quitter.elo = Math.max(0, quitter.elo - 17);
+                  quitter.losses++;
+                  await quitter.save();
+
+                  // Vencedor ganha pontos (cálculo normal de vitória)
+                  const delta = calculateEloDelta('win', 'opponent_disconnected', 0, 0, winner.elo, quitter.elo);
+                  const finalWinPoints = Math.abs(delta) > 0 ? Math.abs(delta) : 10;
+                  winner.elo += finalWinPoints;
+                  winner.wins++;
+                  await winner.save();
+
+                  // Tenta avisar o vencedor do novo Elo (se estiver online)
+                  const sWinner = onlineUsers[winner.userId];
+                  if (sWinner) io.to(sWinner).emit('elo_update', { newElo: winner.elo, delta: finalWinPoints, rank: getRankName(winner.elo) });
                 }
-              }
-            } catch (e) {
-              console.error("Erro ao atualizar Elos na desconexão:", e);
+              } catch (e) { console.error("Erro WO:", e); }
             }
+
+            // Limpeza final
+            delete activeMatches[rId];
+            delete reconnectionTimeouts[rId];
+          } else {
+            console.log(`[TIMEOUT] Cancelado. Usuário ${socket.user.name} já voltou.`);
           }
-          delete activeMatches[rId];
-          delete reconnectionTimeouts[rId];
-        } else {
-          console.log(`[TIMEOUT] Cancelado para sala ${rId}. Usuário voltou ou jogo acabou.`);
         }
-      }, 25000); // 25 Segundos de tolerância
+      }, 25000); // 25 segundos
     }
   });
 });
@@ -639,7 +727,8 @@ async function startMatch(p1, p2, mode) {
     moveHistory: [],
     p1Time: 1020,
     p2Time: 1020,
-    isPlayer1Turn: true // [NOVO] Controle de turno no servidor
+    isPlayer1Turn: true, // [NOVO] Controle de turno no servidor
+    isFinished: false    // [NOVO] Trava de segurança para Game Over
   };
 
   p1.emit('match_found', { isPlayer1: true, opponent: { name: p2.user.name, elo: elo2, rank: getRankName(elo2) }, mode });
