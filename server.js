@@ -367,7 +367,31 @@ io.on('connection', (socket) => {
   });
 
   // --- MATCHMAKING (COM ATUALIZAÇÃO FORÇADA DE ELO) ---
+  // --- MATCHMAKING BLINDADO (SEM FURAR FILA) ---
   socket.on('find_match', async (incomingData) => { // Async obrigatório
+
+    // 1. GUARDIÃO DA FILA (A CORREÇÃO DO ESPERTINHO)
+    // Varre todas as partidas ativas na memória.
+    // Se o usuário (pelo ID, não pelo socket) já estiver jogando, BLOQUEIA.
+    const ongoingMatchId = Object.keys(activeMatches).find(roomId => {
+      const m = activeMatches[roomId];
+      // Verifica se é um dos jogadores E se a partida não acabou
+      return (m.p1.id === socket.user.id || m.p2.id === socket.user.id) && !m.isFinished;
+    });
+
+    if (ongoingMatchId) {
+      console.log(`[BLOCK] ${socket.user.name} tentou entrar na fila mas já está na sala ${ongoingMatchId}.`);
+
+      // Avisa o cliente que ele não pode jogar
+      socket.emit('match_error', 'Você ainda tem uma batalha em andamento!');
+
+      // (Opcional) Força o cliente a voltar para a sala antiga
+      // socket.emit('force_rejoin', { roomId: ongoingMatchId }); 
+      return;
+    }
+
+    // -----------------------------------------------------------
+
     const mode = (incomingData?.mode?.toLowerCase() === 'friendly') ? 'friendly' : 'ranked';
 
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
