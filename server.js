@@ -44,6 +44,9 @@ const reconnectionTimeouts = {};
 // ===========================================================================
 // 3. LÓGICA DE ELO
 // ===========================================================================
+// ===========================================================================
+// 3. LÓGICA DE ELO (AJUSTADA PARA O NOVO SISTEMA DE HONRA)
+// ===========================================================================
 function getRankName(elo) {
   if (elo < 500) return "Camponês";
   if (elo < 750) return "Soldado";
@@ -58,47 +61,65 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
   const res = result?.toLowerCase() || '';
   const rea = reason?.toLowerCase() || '';
 
+  // --- 🟢 VITÓRIA (Pontuação Aumentada) ---
   if (res === 'win' || res === 'victory' || res === 'win_by_wo') {
     switch (rea) {
-      case 'regicide': delta = 10; break;
-      case 'dominance': delta = 9; break;
-      case 'annihilation': delta = 8; break;
-      case 'surrender': delta = 7; break;
-      case 'afk': delta = 7; break;
-      case 'opponent_disconnected': delta = 7; break;
-      case 'time_out': delta = 9; break;
-      default: delta = 5;
+      case 'regicide': delta = 12; break;             // +12
+      case 'dominance': delta = 10; break;            // +10
+      case 'time_out': delta = 10; break;             // +10
+      case 'annihilation': delta = 9; break;          // +9
+      case 'surrender': delta = 9; break;             // +9
+      case 'afk': delta = 9; break;                   // +9
+      case 'opponent_disconnected': delta = 9; break; // +9
+      default: delta = 6;
     }
+
+    // Bônus de Desafio (Vencer alguém mais forte)
     if (oppElo > myElo) {
       const diffPercent = ((oppElo - myElo) / myElo) * 100;
       if (diffPercent >= 20) delta += 3;
       else if (diffPercent >= 15) delta += 1;
     }
     return delta;
-  } else {
-    if (rea === 'quit' || rea === 'opponent_disconnected') return -17;
-    if (rea === 'afk') return -10;
-    if (rea === 'surrender') return -10;
+  }
 
-    let baseLoss = -8;
+  // --- 🔴 DERROTA (Penalidades Ajustadas) ---
+  else {
+    // 1. Penalidades Fixas por Conduta (Sem choro, sem honra)
+    if (rea === 'quit' || rea === 'opponent_disconnected') return -17;
+    if (rea === 'afk') return -13;
+    if (rea === 'surrender') return -11;
+
+    // 2. Derrota em Combate (Regicídio, Tempo, Aniquilação sofridos)
+    // Aqui entra o Sistema de Honra baseado no quanto o INIMIGO sobrou.
+    let baseLoss = -9;
     let modifiers = 0;
 
-    if (oppScore > 0 && myScore > 0) {
-      const perfDiff = ((oppScore - myScore) / (myScore || 1)) * 100;
-      if (perfDiff < 50) modifiers += 4;
-      else if (perfDiff < 80) modifiers += 3;
-      else if (perfDiff < 100) modifiers += 2;
-      else if (perfDiff < 150) modifiers += 1;
-    } else if (myScore > 0 && oppScore === 0) {
-      modifiers += 4;
-    }
+    // oppScore = Pontos das peças que sobraram vivas no tabuleiro do vencedor.
+    // Total Máximo Possível = 58.
 
+    if (oppScore < 20) {
+      // Inimigo sobrou com menos de 20 pontos (batalha sangrenta)
+      modifiers += 4; // Perde só 5 (-9 + 4)
+    } else if (oppScore >= 20 && oppScore <= 30) {
+      modifiers += 3; // Perde só 6
+    } else if (oppScore > 30 && oppScore <= 40) {
+      modifiers += 2; // Perde só 7
+    } else if (oppScore > 40 && oppScore <= 50) {
+      modifiers += 1; // Perde só 8
+    }
+    // Se oppScore > 50 (Inimigo quase intacto), modifiers = 0. Perde 9 cheio.
+
+    // Penalidade por Favoritismo (Perder para alguém muito mais fraco)
     if (myElo > oppElo) {
       const mmrDiff = ((myElo - oppElo) / myElo) * 100;
-      if (mmrDiff >= 20) modifiers -= 2;
+      if (mmrDiff >= 20) modifiers -= 2;      // Punição extra
       else if (mmrDiff >= 15) modifiers -= 1;
     }
+
     delta = baseLoss + modifiers;
+
+    // Trava de segurança: Derrota nunca pode dar pontos positivos (mínimo 0)
     return delta > 0 ? 0 : delta;
   }
 }
