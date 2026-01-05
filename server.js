@@ -254,7 +254,7 @@ io.on('connection', (socket) => {
 
           // Limpeza Cirúrgica: Limpa só o array de notificações no banco, sem mexer no resto do user
           await User.updateOne({ userId: user.userId }, { $set: { notifications: [] } });
-        }, 3000);
+        }, 5000);
       }
 
       // Atualiza o socket na memória
