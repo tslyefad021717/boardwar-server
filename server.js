@@ -30,6 +30,11 @@ const userSchema = new mongoose.Schema({
   wins: { type: Number, default: 0 },
   losses: { type: Number, default: 0 },
   friends: [{ type: String }],
+  // [NOVO] Caixa de correio para quando estiver offline
+  notifications: [{
+    type: { type: String }, // Ex: 'friend_added_you'
+    data: { type: Object }  // Ex: { name: 'Thiago' }
+  }],
   createdAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', userSchema);
@@ -41,9 +46,6 @@ let queues = { ranked: [], friendly: [] };
 const activeMatches = {};
 const reconnectionTimeouts = {};
 
-// ===========================================================================
-// 3. LÓGICA DE ELO
-// ===========================================================================
 // ===========================================================================
 // 3. LÓGICA DE ELO (AJUSTADA PARA O NOVO SISTEMA DE HONRA)
 // ===========================================================================
@@ -237,6 +239,20 @@ io.on('connection', (socket) => {
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
 
+      // [NOVO] Verifica se tem notificações pendentes na caixa de correio (Offline Messages)
+      if (user.notifications && user.notifications.length > 0) {
+        console.log(`[NOTIFY] Entregando ${user.notifications.length} pendências para ${user.username}`);
+
+        for (const notif of user.notifications) {
+          // Envia cada notificação guardada para o cliente
+          socket.emit(notif.type, notif.data);
+        }
+
+        // Limpa a caixa de correio depois de entregar
+        user.notifications = [];
+        await user.save();
+      }
+
       // Atualiza o socket na memória
       socket.user.name = user.username;
       socket.user.elo = user.elo;
@@ -267,9 +283,21 @@ io.on('connection', (socket) => {
       socket.emit('friend_success', `Agora você segue ${target.username}!`);
 
       const targetSocketId = onlineUsers[target.userId];
+      const notificationData = { name: socket.user.name };
+
       if (targetSocketId) {
-        io.to(targetSocketId).emit('friend_added_you', { name: socket.user.name });
+        // CENÁRIO 1: ONLINE (Entrega Imediata)
+        io.to(targetSocketId).emit('friend_added_you', notificationData);
+      } else {
+        // CENÁRIO 2: OFFLINE (Guarda na Caixa de Correio)
+        console.log(`[OFFLINE] Guardando notificação para ${target.username}`);
+        target.notifications.push({
+          type: 'friend_added_you',
+          data: notificationData
+        });
+        await target.save();
       }
+
     } catch (e) { console.error(e); }
   });
 
