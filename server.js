@@ -228,6 +228,7 @@ io.on('connection', (socket) => {
   }
 
   // --- REGISTRO ---
+  // --- REGISTRO ---
   socket.on('register_user', async (data) => {
     try {
       const { userId, username } = data;
@@ -240,18 +241,20 @@ io.on('connection', (socket) => {
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
 
-      // [NOVO] Verifica se tem notificações pendentes na caixa de correio (Offline Messages)
+      // [CORREÇÃO] Caixa de correio com DELAY para evitar perda de pacote no Flutter
       if (user.notifications && user.notifications.length > 0) {
         console.log(`[NOTIFY] Entregando ${user.notifications.length} pendências para ${user.username}`);
 
-        for (const notif of user.notifications) {
-          // Envia cada notificação guardada para o cliente
-          socket.emit(notif.type, notif.data);
-        }
+        // Espera 2 segundos para o Flutter carregar a Home Screen
+        setTimeout(async () => {
+          // Envia as notificações que estavam na memória
+          for (const notif of user.notifications) {
+            socket.emit(notif.type, notif.data);
+          }
 
-        // Limpa a caixa de correio depois de entregar
-        user.notifications = [];
-        await user.save();
+          // Limpeza Cirúrgica: Limpa só o array de notificações no banco, sem mexer no resto do user
+          await User.updateOne({ userId: user.userId }, { $set: { notifications: [] } });
+        }, 3000);
       }
 
       // Atualiza o socket na memória
