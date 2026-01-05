@@ -45,6 +45,7 @@ const User = mongoose.model('User', userSchema);
 let queues = { ranked: [], friendly: [] };
 const activeMatches = {};
 const reconnectionTimeouts = {};
+const cleanupTimeouts = {}; // [CORREÇÃO] Armazena os timers de limpeza para poder cancelar na revanche
 
 // ===========================================================================
 // 3. LÓGICA DE ELO (AJUSTADA PARA O NOVO SISTEMA DE HONRA)
@@ -540,6 +541,15 @@ io.on('connection', (socket) => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
       if (data.accepted) {
+
+        // [CORREÇÃO] CANCELA A LIMPEZA AUTOMÁTICA DA SALA
+        // Isso impede que o servidor apague a sala no meio da revanche!
+        if (cleanupTimeouts[rId]) {
+          clearTimeout(cleanupTimeouts[rId]);
+          delete cleanupTimeouts[rId];
+          console.log(`[REMATCH] Timer de limpeza cancelado para sala ${rId}`);
+        }
+
         const match = activeMatches[rId];
         match.moveHistory = [];
         match.p1Time = 1020;
@@ -681,13 +691,17 @@ io.on('connection', (socket) => {
     });
 
     // 🔴 LIMPEZA FINAL DA MEMÓRIA
-    // Delay curto para garantir que a mensagem saia antes da sala morrer
-    setTimeout(() => {
+    // Aumentado para 30 segundos para permitir Revanche
+    // Guardamos o timer no objeto global para poder cancelar na Revanche
+    if (cleanupTimeouts[rId]) clearTimeout(cleanupTimeouts[rId]);
+
+    cleanupTimeouts[rId] = setTimeout(() => {
       if (activeMatches[rId]) {
         delete activeMatches[rId];
-        console.log(`[CLEANUP] Sala ${rId} removida com sucesso.`);
+        delete cleanupTimeouts[rId];
+        console.log(`[CLEANUP] Sala ${rId} removida com sucesso após 30s.`);
       }
-    }, 30000);
+    }, 30000); // 30 Segundos
   });
 
   // =================================================================
