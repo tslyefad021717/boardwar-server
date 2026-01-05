@@ -687,7 +687,7 @@ io.on('connection', (socket) => {
         delete activeMatches[rId];
         console.log(`[CLEANUP] Sala ${rId} removida com sucesso.`);
       }
-    }, 1000);
+    }, 30000);
   });
 
   // =================================================================
