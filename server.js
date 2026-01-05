@@ -254,7 +254,7 @@ io.on('connection', (socket) => {
 
           // Limpeza Cirúrgica: Limpa só o array de notificações no banco, sem mexer no resto do user
           await User.updateOne({ userId: user.userId }, { $set: { notifications: [] } });
-        }, 6000);
+        }, 000);
       }
 
       // Atualiza o socket na memória
@@ -817,33 +817,12 @@ async function startMatch(p1, p2, mode) {
     moveHistory: [],
     p1Time: 1020,
     p2Time: 1020,
-    isPlayer1Turn: true,
-    isFinished: false,
-    // --- [CORREÇÃO VITAL] ---
-    moveCount: 0 // Contador atômico para sincronia em 3G/4G
+    isPlayer1Turn: true, // [NOVO] Controle de turno no servidor
+    isFinished: false    // [NOVO] Trava de segurança para Game Over
   };
 
   p1.emit('match_found', { isPlayer1: true, opponent: { name: p2.user.name, elo: elo2, rank: getRankName(elo2) }, mode });
   p2.emit('match_found', { isPlayer1: false, opponent: { name: p1.user.name, elo: elo1, rank: getRankName(elo1) }, mode });
 }
 
-// ... dentro de io.on('connection') ...
-socket.on('game_move', (msg) => {
-  const rId = socket.roomId;
-  if (rId && activeMatches[rId]) {
-    const match = activeMatches[rId];
-
-    // [NOVO] Carimba a ordem do movimento
-    match.moveCount++;
-    msg.moveIndex = match.moveCount;
-
-    match.moveHistory.push(msg);
-
-    if (msg.turnEnded === true) {
-      match.isPlayer1Turn = !match.isPlayer1Turn;
-    }
-
-    // Envia o movimento carimbado para o oponente
-    socket.to(rId).emit('game_message', msg);
-  }
-});
+server.listen(process.env.PORT || 8080, () => console.log(`Servidor Ativo`));
