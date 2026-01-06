@@ -612,6 +612,7 @@ io.on('connection', (socket) => {
 
     try {
       // Verifica se é RANKEADA para calcular Elo
+      // Verifica se é RANKEADA para calcular Elo
       if (match.mode === 'ranked') {
         // Busca AMBOS os usuários para garantir a atualização única e atômica
         const p1Data = match.p1;
@@ -621,49 +622,49 @@ io.on('connection', (socket) => {
         const user2 = await User.findOne({ userId: p2Data.id });
 
         if (user1 && user2) {
-          // Calcula o Delta base
-          const delta = calculateEloDelta(
-            data.result,
-            data.reason,
-            data.myScore || 0,
-            data.oppScore || 0,
-            user1.elo,
-            user2.elo
-          );
-
-          // Lógica para determinar quem é Vencedor e quem é Perdedor
-          // O report vem de `socket.user.id`. Se result == 'win', o reportador ganhou.
+          // Lógica para determinar quem é Vencedor e quem é Perdedor E AS PONTUAÇÕES REAIS
           const isReporterP1 = (socket.user.id === p1Data.id);
-
           let winner, loser;
-          let winnerEloBefore, loserEloBefore;
+          let winnerScore = 0, loserScore = 0; // [CORREÇÃO] Variáveis para guardar score real
 
-          // Se o report diz que quem enviou ganhou:
+          // Se o report diz que quem enviou GANHOU:
           if (['win', 'victory'].includes(data.result?.toLowerCase())) {
-            if (isReporterP1) { winner = user1; loser = user2; }
-            else { winner = user2; loser = user1; }
+            if (isReporterP1) {
+              winner = user1; loser = user2;
+              winnerScore = data.myScore || 0; loserScore = data.oppScore || 0;
+            } else {
+              winner = user2; loser = user1;
+              winnerScore = data.oppScore || 0; loserScore = data.myScore || 0;
+            }
           }
-          // Se o report diz que quem enviou perdeu (raro, mas possível):
+          // Se o report diz que quem enviou PERDEU:
           else {
-            if (isReporterP1) { winner = user2; loser = user1; }
-            else { winner = user1; loser = user2; }
+            if (isReporterP1) {
+              winner = user2; loser = user1;
+              winnerScore = data.oppScore || 0; loserScore = data.myScore || 0;
+            } else {
+              winner = user1; loser = user2;
+              winnerScore = data.myScore || 0; loserScore = data.oppScore || 0;
+            }
           }
 
-          winnerEloBefore = winner.elo;
-          loserEloBefore = loser.elo;
+          const winnerEloBefore = winner.elo;
+          const loserEloBefore = loser.elo;
 
-          // Recalcula o Delta final baseado no Vencedor vs Perdedor
-          // Isso garante que se o "fraco" ganhar do "forte", ganhe mais pts
-          // Usamos a função calculateEloDelta simulando um report de 'win' do vencedor
-          const realWinDelta = calculateEloDelta('win', data.reason, 0, 0, winnerEloBefore, loserEloBefore);
-
-          // Garante que seja positivo para o vencedor
+          // 2. Cálculo do Vencedor (Passando os scores reais capturados acima)
+          // Nota: Para o vencedor, myScore = winnerScore, oppScore = loserScore
+          const realWinDelta = calculateEloDelta('win', data.reason, winnerScore, loserScore, winnerEloBefore, loserEloBefore);
           const finalWinPoints = Math.abs(realWinDelta) > 0 ? Math.abs(realWinDelta) : 10;
 
-          // Calcula perda do perdedor (geralmente negativa ou zero)
-          const realLossDelta = calculateEloDelta('loss', data.reason, 0, 0, loserEloBefore, winnerEloBefore);
+          // 3. Cálculo do Perdedor (Passando os scores reais capturados acima)
+          // Nota: Para o perdedor, myScore = loserScore, oppScore = winnerScore
+          let realLossDelta = calculateEloDelta('loss', data.reason, loserScore, winnerScore, loserEloBefore, winnerEloBefore);
 
-          // Aplica mudanças
+          // [CORREÇÃO CRÍTICA] Evita o bug do "loading eterno".
+          // Se a matemática der 0 (ex: perdeu pra alguém muito forte e matou muito), força -1.
+          if (realLossDelta === 0) realLossDelta = -1;
+
+          // Aplica mudanças no Banco
           winner.elo += finalWinPoints;
           winner.wins++;
 
