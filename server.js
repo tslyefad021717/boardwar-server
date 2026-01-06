@@ -613,8 +613,8 @@ io.on('connection', (socket) => {
     try {
       // Verifica se é RANKEADA para calcular Elo
       // Verifica se é RANKEADA para calcular Elo
+      // Verifica se é RANKEADA para calcular Elo
       if (match.mode === 'ranked') {
-        // Busca AMBOS os usuários para garantir a atualização única e atômica
         const p1Data = match.p1;
         const p2Data = match.p2;
 
@@ -622,12 +622,12 @@ io.on('connection', (socket) => {
         const user2 = await User.findOne({ userId: p2Data.id });
 
         if (user1 && user2) {
-          // Lógica para determinar quem é Vencedor e quem é Perdedor E AS PONTUAÇÕES REAIS
           const isReporterP1 = (socket.user.id === p1Data.id);
-          let winner, loser;
-          let winnerScore = 0, loserScore = 0; // [CORREÇÃO] Variáveis para guardar score real
 
-          // Se o report diz que quem enviou GANHOU:
+          let winner, loser;
+          let winnerScore = 0, loserScore = 0;
+
+          // 1. Identifica Vencedor/Perdedor e PEGA OS PONTOS REAIS
           if (['win', 'victory'].includes(data.result?.toLowerCase())) {
             if (isReporterP1) {
               winner = user1; loser = user2;
@@ -636,9 +636,7 @@ io.on('connection', (socket) => {
               winner = user2; loser = user1;
               winnerScore = data.oppScore || 0; loserScore = data.myScore || 0;
             }
-          }
-          // Se o report diz que quem enviou PERDEU:
-          else {
+          } else {
             if (isReporterP1) {
               winner = user2; loser = user1;
               winnerScore = data.oppScore || 0; loserScore = data.myScore || 0;
@@ -651,37 +649,37 @@ io.on('connection', (socket) => {
           const winnerEloBefore = winner.elo;
           const loserEloBefore = loser.elo;
 
-          // 2. Cálculo do Vencedor (Passando os scores reais capturados acima)
-          // Nota: Para o vencedor, myScore = winnerScore, oppScore = loserScore
+          // 2. Cálculo Matemático Instantâneo (Agora com os pontos certos)
           const realWinDelta = calculateEloDelta('win', data.reason, winnerScore, loserScore, winnerEloBefore, loserEloBefore);
           const finalWinPoints = Math.abs(realWinDelta) > 0 ? Math.abs(realWinDelta) : 10;
 
-          // 3. Cálculo do Perdedor (Passando os scores reais capturados acima)
-          // Nota: Para o perdedor, myScore = loserScore, oppScore = winnerScore
-          let realLossDelta = calculateEloDelta('loss', data.reason, loserScore, winnerScore, loserEloBefore, winnerEloBefore);
+          const realLossDelta = calculateEloDelta('loss', data.reason, loserScore, winnerScore, loserEloBefore, winnerEloBefore);
 
-          // [CORREÇÃO CRÍTICA] Evita o bug do "loading eterno".
-          // Se a matemática der 0 (ex: perdeu pra alguém muito forte e matou muito), força -1.
-          if (realLossDelta === 0) realLossDelta = -1;
+          console.log(`[ELO CALC] Winner: +${finalWinPoints} | Loser: ${realLossDelta} (Placar: ${winnerScore} x ${loserScore})`);
 
-          // Aplica mudanças no Banco
+          // 3. Salva no Banco (Sem await para não travar o fluxo)
           winner.elo += finalWinPoints;
           winner.wins++;
-
           loser.elo = Math.max(0, loser.elo + realLossDelta);
           loser.losses++;
 
-          await winner.save();
-          await loser.save();
+          Promise.all([winner.save(), loser.save()])
+            .catch(err => console.error("[DB] Erro ao salvar Elo:", err));
 
-          console.log(`[ELO] ${winner.username} (+${finalWinPoints}) vs ${loser.username} (${realLossDelta})`);
+          // 4. SINCRONIA: Espera 1.5s porque o Flutter do perdedor tem um delay de 1.2s antes de abrir a tela.
+          // Se enviarmos antes disso, a mensagem se perde no vácuo.
+          setTimeout(() => {
+            const s1 = onlineUsers[winner.userId];
+            const s2 = onlineUsers[loser.userId];
 
-          // Envia updates para os sockets conectados em tempo real
-          const s1 = onlineUsers[winner.userId];
-          const s2 = onlineUsers[loser.userId];
+            if (s1) io.to(s1).emit('elo_update', { newElo: winner.elo, delta: finalWinPoints, rank: getRankName(winner.elo) });
 
-          if (s1) io.to(s1).emit('elo_update', { newElo: winner.elo, delta: finalWinPoints, rank: getRankName(winner.elo) });
-          if (s2) io.to(s2).emit('elo_update', { newElo: loser.elo, delta: realLossDelta, rank: getRankName(loser.elo) });
+            if (s2) {
+              io.to(s2).emit('elo_update', { newElo: loser.elo, delta: realLossDelta, rank: getRankName(loser.elo) });
+            } else {
+              console.log(`[AVISO] Perdedor (${loser.username}) desconectou antes de receber os pontos.`);
+            }
+          }, 1500);
         }
       }
     } catch (e) { console.error("Erro Elo Report:", e); }
