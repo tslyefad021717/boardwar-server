@@ -42,7 +42,7 @@ const User = mongoose.model('User', userSchema);
 // ===========================================================================
 // 2. ESTADO GLOBAL
 // ===========================================================================
-let queues = { ranked: [], friendly: [] };
+let queues = { ranked: [], friendly: [], archery: [], horse_race: [] }; // Adicionado horse_race
 const activeMatches = {};
 const reconnectionTimeouts = {};
 const cleanupTimeouts = {}; // [CORREÇÃO] Armazena os timers de limpeza para poder cancelar na revanche
@@ -429,20 +429,25 @@ io.on('connection', (socket) => {
     // ===========================================================
     // A. LÓGICA PARA O MINI-GAME (ARCHERY) - PRIORIDADE TOTAL
     // ===========================================================
-    if (mode === 'archery_pvp') {
-      // Remove de qualquer fila antes de entrar
-      queues.archery = queues.archery.filter(s => s.id !== socket.id);
+    // ===========================================================
+    // A. LÓGICA PARA MINI-GAMES (ARCHERY & HORSE RACE)
+    // ===========================================================
+    if (mode === 'archery_pvp' || mode === 'horse_race_pvp') {
+      const queueName = mode === 'archery_pvp' ? 'archery' : 'horse_race';
 
-      const opponent = queues.archery.shift();
+      // Limpa de outras filas
+      queues[queueName] = queues[queueName].filter(s => s.id !== socket.id);
+
+      const opponent = queues[queueName].shift();
 
       if (opponent) {
-        console.log(`[MINI-GAME] Pareando duelo: ${socket.user.name} vs ${opponent.user.name}`);
-        startMatch(opponent, socket, 'archery_pvp');
+        console.log(`[MINI-GAME] Pareando ${mode}: ${socket.user.name} vs ${opponent.user.name}`);
+        startMatch(opponent, socket, mode);
       } else {
-        queues.archery.push(socket);
-        socket.emit('status', "Buscando oponente para Duelo...");
+        queues[queueName].push(socket);
+        socket.emit('status', "Buscando oponente para a disputa...");
       }
-      return; // 🛑 Para a execução aqui para não entrar na lógica de xadrez
+      return;
     }
 
     // ===========================================================
@@ -519,6 +524,20 @@ io.on('connection', (socket) => {
 
         socket.to(rId).emit('game_message', msg);
       }
+    }
+  });
+  // --- SINCRONIZAÇÃO DA CORRIDA DE CAVALARIA ---
+  socket.on('horse_action', (data) => {
+    const rId = socket.roomId;
+    if (rId && activeMatches[rId]) {
+      // Repassa a posição, pista ou colisão para o oponente em tempo real
+      socket.to(rId).emit('game_message', {
+        type: 'horse_sync',
+        lane: data.lane,
+        distance: data.distance,
+        isFrozen: data.isFrozen,
+        action: data.type // 'move', 'hit', 'item'
+      });
     }
   });
   // Adicione isso no server.js para o Mini-game
