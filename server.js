@@ -860,6 +860,13 @@ async function startMatch(p1, p2, mode) {
   p1.join(roomId); p1.roomId = roomId;
   p2.join(roomId); p2.roomId = roomId;
 
+  // --- [SEGURANÇA] SÓ GERA SEED SE FOR A CORRIDA ---
+  // Se for xadrez (ranked/friendly), mapSeed fica 0 (padrão) e nem vai no pacote
+  let mapSeed = 0;
+  if (mode === 'horse_race_pvp') {
+    mapSeed = Math.floor(Math.random() * 1000000);
+  }
+
   let u1 = await User.findOne({ userId: p1.user.id });
   let u2 = await User.findOne({ userId: p2.user.id });
 
@@ -873,12 +880,32 @@ async function startMatch(p1, p2, mode) {
     moveHistory: [],
     p1Time: 1020,
     p2Time: 1020,
-    isPlayer1Turn: true, // [NOVO] Controle de turno no servidor
-    isFinished: false    // [NOVO] Trava de segurança para Game Over
+    isPlayer1Turn: true,
+    isFinished: false
   };
 
-  p1.emit('match_found', { isPlayer1: true, opponent: { name: p2.user.name, elo: elo2, rank: getRankName(elo2) }, mode });
-  p2.emit('match_found', { isPlayer1: false, opponent: { name: p1.user.name, elo: elo1, rank: getRankName(elo1) }, mode });
+  // Payload Base
+  const p1Payload = {
+    isPlayer1: true,
+    opponent: { name: p2.user.name, elo: elo2, rank: getRankName(elo2) },
+    mode
+  };
+
+  const p2Payload = {
+    isPlayer1: false,
+    opponent: { name: p1.user.name, elo: elo1, rank: getRankName(elo1) },
+    mode
+  };
+
+  // --- [INJEÇÃO CIRÚRGICA] ---
+  // Só adiciona o seed ao pacote se for o modo correto
+  if (mode === 'horse_race_pvp') {
+    p1Payload.mapSeed = mapSeed;
+    p2Payload.mapSeed = mapSeed;
+  }
+
+  p1.emit('match_found', p1Payload);
+  p2.emit('match_found', p2Payload);
 }
 
 server.listen(process.env.PORT || 8080, () => console.log(`Servidor Ativo`));
