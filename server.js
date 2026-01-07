@@ -421,41 +421,62 @@ io.on('connection', (socket) => {
 
   // --- MATCHMAKING (COM ATUALIZAÇÃO FORÇADA DE ELO) ---
   // --- MATCHMAKING BLINDADO (SEM FURAR FILA) ---
+  // --- MATCHMAKING (COM SUPORTE A MINI-GAME E XADREZ) ---
   socket.on('find_match', async (incomingData) => { // Async obrigatório
 
-    // 1. GUARDIÃO DA FILA (A CORREÇÃO DO ESPERTINHO)
-    // Varre todas as partidas ativas na memória.
-    // Se o usuário (pelo ID, não pelo socket) já estiver jogando, BLOQUEIA.
+    const mode = incomingData?.mode?.toLowerCase();
+
+    // ===========================================================
+    // A. LÓGICA PARA O MINI-GAME (ARCHERY) - PRIORIDADE TOTAL
+    // ===========================================================
+    if (mode === 'archery_pvp') {
+      // Remove de qualquer fila antes de entrar
+      queues.archery = queues.archery.filter(s => s.id !== socket.id);
+
+      const opponent = queues.archery.shift();
+
+      if (opponent) {
+        console.log(`[MINI-GAME] Pareando duelo: ${socket.user.name} vs ${opponent.user.name}`);
+        startMatch(opponent, socket, 'archery_pvp');
+      } else {
+        queues.archery.push(socket);
+        socket.emit('status', "Buscando oponente para Duelo...");
+      }
+      return; // 🛑 Para a execução aqui para não entrar na lógica de xadrez
+    }
+
+    // ===========================================================
+    // B. LÓGICA PARA O XADREZ (RANKED / FRIENDLY)
+    // ===========================================================
+
+    // 1. GUARDIÃO DA FILA (BLOQUEIA QUEM JÁ ESTÁ EM PARTIDA DE XADREZ)
     const ongoingMatchId = Object.keys(activeMatches).find(roomId => {
       const m = activeMatches[roomId];
-      // Verifica se é um dos jogadores E se a partida não acabou
       return (m.p1.id === socket.user.id || m.p2.id === socket.user.id) && !m.isFinished;
     });
 
     if (ongoingMatchId) {
       console.log(`[BLOCK] ${socket.user.name} tentou entrar na fila mas já está na sala ${ongoingMatchId}.`);
-
-      // Avisa o cliente que ele não pode jogar
       socket.emit('match_error', 'Você ainda tem uma batalha em andamento!');
-
-      // (Opcional) Força o cliente a voltar para a sala antiga
-      // socket.emit('force_rejoin', { roomId: ongoingMatchId }); 
       return;
     }
 
-    // -----------------------------------------------------------
+    // 2. DEFINIÇÃO DO MODO DE XADREZ
+    const chessMode = (mode === 'friendly') ? 'friendly' : 'ranked';
 
-    const mode = (incomingData?.mode?.toLowerCase() === 'friendly') ? 'friendly' : 'ranked';
-
+    // Limpa o usuário de outras filas de xadrez
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
 
-    if (mode === 'friendly') {
+    if (chessMode === 'friendly') {
       const opponent = queues.friendly.shift();
-      if (opponent) startMatch(opponent, socket, 'friendly');
-      else queues.friendly.push(socket);
+      if (opponent) {
+        startMatch(opponent, socket, 'friendly');
+      } else {
+        queues.friendly.push(socket);
+      }
     } else {
-      // --- ATUALIZAÇÃO DE ELO NA FILA ---
+      // --- ATUALIZAÇÃO DE ELO NA FILA (RANKED) ---
       try {
         const user = await User.findOne({ userId: socket.user.id });
         if (user) {
@@ -463,16 +484,19 @@ io.on('connection', (socket) => {
           socket.user.name = user.username;
           console.log(`[QUEUE] ${user.username} entrando com Elo ATUALIZADO: ${user.elo}`);
         }
-      } catch (err) { console.error("Erro ao atualizar Elo na fila:", err); }
+      } catch (err) {
+        console.error("Erro ao atualizar Elo na fila:", err);
+      }
 
       socket.joinedAt = Date.now();
       queues.ranked.push(socket);
 
-      // Chama a lógica dinâmica
+      // Chama a lógica de pareamento dinâmico
       findMatchDynamic();
     }
+
     socket.emit('status', `Buscando oponente...`);
-  });
+  }); // <--- FIM DO socket.on('find_match')
 
   socket.on('leave_queue', () => {
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
