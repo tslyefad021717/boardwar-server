@@ -497,6 +497,17 @@ io.on('connection', (socket) => {
       }
     }
   });
+  // Adicione isso no server.js para o Mini-game
+  socket.on('archery_action', (data) => {
+    const room = findRoomBySocket(socket.id); // Sua lógica de achar a sala atual
+    if (room) {
+      socket.to(room).emit('game_message', {
+        type: 'archery_sync',
+        x: data.x,
+        action: data.type
+      });
+    }
+  });
 
   // --- [NOVO] ATUALIZAÇÃO DE TURNO NO SERVIDOR (TURN_PASS EXPLÍCITO) ---
   socket.on('turn_pass', (data) => {
@@ -679,7 +690,7 @@ io.on('connection', (socket) => {
             } else {
               console.log(`[AVISO] Perdedor (${loser.username}) desconectou antes de receber os pontos.`);
             }
-          }, 1500);
+          }, 2300);
         }
       }
     } catch (e) { console.error("Erro Elo Report:", e); }
