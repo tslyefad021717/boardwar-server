@@ -42,7 +42,8 @@ const User = mongoose.model('User', userSchema);
 // ===========================================================================
 // 2. ESTADO GLOBAL
 // ===========================================================================
-let queues = { ranked: [], friendly: [], archery: [], horse_race: [] }; // Adicionado horse_race
+// Adicione 'tennis' na lista de filas
+let queues = { ranked: [], friendly: [], archery: [], horse_race: [], tennis: [] }; // Adicionado horse_race
 const activeMatches = {};
 const reconnectionTimeouts = {};
 const cleanupTimeouts = {}; // [CORREÇÃO] Armazena os timers de limpeza para poder cancelar na revanche
@@ -422,18 +423,19 @@ io.on('connection', (socket) => {
   // --- MATCHMAKING (COM ATUALIZAÇÃO FORÇADA DE ELO) ---
   // --- MATCHMAKING BLINDADO (SEM FURAR FILA) ---
   // --- MATCHMAKING (COM SUPORTE A MINI-GAME E XADREZ) ---
-  socket.on('find_match', async (incomingData) => { // Async obrigatório
-
+  socket.on('find_match', async (incomingData) => {
     const mode = incomingData?.mode?.toLowerCase();
 
     // ===========================================================
-    // A. LÓGICA PARA O MINI-GAME (ARCHERY) - PRIORIDADE TOTAL
+    // A. LÓGICA PARA MINI-GAMES (ARCHERY, HORSE RACE & TENNIS)
     // ===========================================================
-    // ===========================================================
-    // A. LÓGICA PARA MINI-GAMES (ARCHERY & HORSE RACE)
-    // ===========================================================
-    if (mode === 'archery_pvp' || mode === 'horse_race_pvp') {
-      const queueName = mode === 'archery_pvp' ? 'archery' : 'horse_race';
+    // 🔴 Adicione 'tennis_pvp' aqui na condição
+    if (mode === 'archery_pvp' || mode === 'horse_race_pvp' || mode === 'tennis_pvp') {
+
+      let queueName = '';
+      if (mode === 'archery_pvp') queueName = 'archery';
+      else if (mode === 'horse_race_pvp') queueName = 'horse_race';
+      else if (mode === 'tennis_pvp') queueName = 'tennis'; // <--- AQUI
 
       // Limpa de outras filas
       queues[queueName] = queues[queueName].filter(s => s.id !== socket.id);
@@ -449,6 +451,7 @@ io.on('connection', (socket) => {
       }
       return;
     }
+    // ... (resto do código do xadrez continua igual)
 
     // ===========================================================
     // B. LÓGICA PARA O XADREZ (RANKED / FRIENDLY)
@@ -551,6 +554,18 @@ io.on('connection', (socket) => {
         type: 'archery_sync',
         x: data.x,
         action: data.type
+      });
+    }
+  });
+  // --- SINCRONIZAÇÃO DO TÊNIS DE PEÃO ---
+  socket.on('tennis_action', (data) => {
+    const rId = socket.roomId;
+    if (rId && activeMatches[rId]) {
+      // Repassa posição da raquete, bola ou placar
+      // O type vira 'tennis_sync' para o cliente filtrar
+      socket.to(rId).emit('game_message', {
+        type: 'tennis_sync',
+        ...data // Repassa tudo (x, y, score, etc)
       });
     }
   });
