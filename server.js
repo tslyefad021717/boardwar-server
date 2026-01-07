@@ -541,9 +541,12 @@ io.on('connection', (socket) => {
     }
   });
   // Adicione isso no server.js para o Mini-game
+  // Lógica corrigida do Archery (igual ao horse_race e xadrez)
   socket.on('archery_action', (data) => {
-    const room = findRoomBySocket(socket.id); // Sua lógica de achar a sala atual
-    if (room) {
+    const room = socket.roomId; // <--- CORREÇÃO: Usa o ID que já está salvo no socket
+
+    // Verifica se a sala existe e se a partida está ativa (segurança extra)
+    if (room && activeMatches[room]) {
       socket.to(room).emit('game_message', {
         type: 'archery_sync',
         x: data.x,
