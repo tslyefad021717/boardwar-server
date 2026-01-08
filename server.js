@@ -427,13 +427,6 @@ io.on('connection', (socket) => {
     const mode = incomingData?.mode?.toLowerCase();
 
     // ===========================================================
-    // A. LÓGICA PARA MINI-GAMES (ARCHERY, HORSE RACE & TENNIS)
-    // ===========================================================
-    // 🔴 Adicione 'tennis_pvp' aqui na condição
-    // 🔴 Adicione 'tennis_pvp' e 'king_pvp' aqui na condição
-    // ... dentro de socket.on('find_match', ...)
-
-    // ===========================================================
     // A. LÓGICA PARA MINI-GAMES (ARCHERY, HORSE RACE, TENNIS & KING)
     // ===========================================================
     if (mode === 'archery_pvp' || mode === 'horse_race_pvp' || mode === 'tennis_pvp' || mode === 'king_pvp') {
@@ -444,21 +437,22 @@ io.on('connection', (socket) => {
       else if (mode === 'tennis_pvp') queueName = 'tennis';
       else if (mode === 'king_pvp') queueName = 'king';
 
-      // 1. Garante que EU não estou na fila (evita duplicidade)
+      // 1. Limpa o usuário atual da fila (evita duplicidade)
       queues[queueName] = queues[queueName].filter(s => s.id !== socket.id);
 
-      // 2. Loop para encontrar um oponente VÁLIDO (ignora desconectados)
       let opponent = null;
-      while (queues[queueName].length > 0) {
-        const candidate = queues[queueName].shift();
-        // Verifica se o socket ainda existe no servidor
-        const candidateSocket = io.sockets.sockets.get(candidate.id);
 
-        if (candidateSocket && candidate.id !== socket.id) {
-          opponent = candidateSocket; // Achamos um oponente vivo!
-          break;
+      // 2. Loop OTIMIZADO (Verifica memória direta .connected)
+      // Isso remove fantasmas sem pesar no processador
+      while (queues[queueName].length > 0) {
+        const candidate = queues[queueName][0]; // Espia o primeiro da fila
+
+        if (candidate.connected) {
+          opponent = queues[queueName].shift(); // Pega ele
+          break; // Sai do loop
+        } else {
+          queues[queueName].shift(); // Joga fora o fantasma
         }
-        // Se não existir (fantasma), o loop roda de novo e pega o próximo
       }
 
       if (opponent) {
