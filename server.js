@@ -431,18 +431,35 @@ io.on('connection', (socket) => {
     // ===========================================================
     // 🔴 Adicione 'tennis_pvp' aqui na condição
     // 🔴 Adicione 'tennis_pvp' e 'king_pvp' aqui na condição
+    // ... dentro de socket.on('find_match', ...)
+
+    // ===========================================================
+    // A. LÓGICA PARA MINI-GAMES (ARCHERY, HORSE RACE, TENNIS & KING)
+    // ===========================================================
     if (mode === 'archery_pvp' || mode === 'horse_race_pvp' || mode === 'tennis_pvp' || mode === 'king_pvp') {
 
       let queueName = '';
       if (mode === 'archery_pvp') queueName = 'archery';
       else if (mode === 'horse_race_pvp') queueName = 'horse_race';
       else if (mode === 'tennis_pvp') queueName = 'tennis';
-      else if (mode === 'king_pvp') queueName = 'king'; // <--- AQUI (REI GULOSO)
+      else if (mode === 'king_pvp') queueName = 'king';
 
-      // Limpa de outras filas
+      // 1. Garante que EU não estou na fila (evita duplicidade)
       queues[queueName] = queues[queueName].filter(s => s.id !== socket.id);
 
-      const opponent = queues[queueName].shift();
+      // 2. Loop para encontrar um oponente VÁLIDO (ignora desconectados)
+      let opponent = null;
+      while (queues[queueName].length > 0) {
+        const candidate = queues[queueName].shift();
+        // Verifica se o socket ainda existe no servidor
+        const candidateSocket = io.sockets.sockets.get(candidate.id);
+
+        if (candidateSocket && candidate.id !== socket.id) {
+          opponent = candidateSocket; // Achamos um oponente vivo!
+          break;
+        }
+        // Se não existir (fantasma), o loop roda de novo e pega o próximo
+      }
 
       if (opponent) {
         console.log(`[MINI-GAME] Pareando ${mode}: ${socket.user.name} vs ${opponent.user.name}`);
