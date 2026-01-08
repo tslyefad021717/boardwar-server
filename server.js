@@ -683,26 +683,26 @@ io.on('connection', (socket) => {
   // =================================================================
   // 6. GAME OVER BLINDADO (CORREÇÃO DE PONTUAÇÃO DUPLICADA)
   // =================================================================
+  // =================================================================
+  // 6. GAME OVER BLINDADO (COM SEPARAÇÃO DE TEMPO DE LIMPEZA)
+  // =================================================================
+  // =================================================================
+  // 6. GAME OVER BLINDADO (COM SEPARAÇÃO DE TEMPO DE LIMPEZA)
+  // =================================================================
   socket.on('game_over_report', async (data) => {
     const rId = socket.roomId;
 
-    // 1. Verificação básica
     if (!rId || !activeMatches[rId]) return;
 
     const match = activeMatches[rId];
 
-    // 🔴 TRAVA DE SEGURANÇA (O SEGREDO)
-    // Se a partida já foi marcada como finalizada, ignora qualquer pacote atrasado
     if (match.isFinished) {
       console.log(`[GAME OVER] Ignorando report duplicado da sala ${rId}`);
       return;
     }
 
-    // Marca imediatamente como finalizada na memória
     match.isFinished = true;
 
-    // 2. CANCELA O TIMER DE DESCONEXÃO (SE HOUVER)
-    // Isso impede que, se o jogo acabar enquanto alguém estava "caído", dê WO.
     if (reconnectionTimeouts[rId]) {
       console.log(`[GAME OVER] Cancelando timer de desconexão da sala ${rId}.`);
       clearTimeout(reconnectionTimeouts[rId]);
@@ -712,9 +712,6 @@ io.on('connection', (socket) => {
     console.log(`[GAME OVER] Sala ${rId} - Result: ${data.result}, Reason: ${data.reason}`);
 
     try {
-      // Verifica se é RANKEADA para calcular Elo
-      // Verifica se é RANKEADA para calcular Elo
-      // Verifica se é RANKEADA para calcular Elo
       if (match.mode === 'ranked') {
         const p1Data = match.p1;
         const p2Data = match.p2;
@@ -728,7 +725,6 @@ io.on('connection', (socket) => {
           let winner, loser;
           let winnerScore = 0, loserScore = 0;
 
-          // 1. Identifica Vencedor/Perdedor e PEGA OS PONTOS REAIS
           if (['win', 'victory'].includes(data.result?.toLowerCase())) {
             if (isReporterP1) {
               winner = user1; loser = user2;
@@ -750,15 +746,12 @@ io.on('connection', (socket) => {
           const winnerEloBefore = winner.elo;
           const loserEloBefore = loser.elo;
 
-          // 2. Cálculo Matemático Instantâneo (Agora com os pontos certos)
           const realWinDelta = calculateEloDelta('win', data.reason, winnerScore, loserScore, winnerEloBefore, loserEloBefore);
           const finalWinPoints = Math.abs(realWinDelta) > 0 ? Math.abs(realWinDelta) : 10;
-
           const realLossDelta = calculateEloDelta('loss', data.reason, loserScore, winnerScore, loserEloBefore, winnerEloBefore);
 
-          console.log(`[ELO CALC] Winner: +${finalWinPoints} | Loser: ${realLossDelta} (Placar: ${winnerScore} x ${loserScore})`);
+          console.log(`[ELO CALC] Winner: +${finalWinPoints} | Loser: ${realLossDelta}`);
 
-          // 3. Salva no Banco (Sem await para não travar o fluxo)
           winner.elo += finalWinPoints;
           winner.wins++;
           loser.elo = Math.max(0, loser.elo + realLossDelta);
@@ -767,44 +760,37 @@ io.on('connection', (socket) => {
           Promise.all([winner.save(), loser.save()])
             .catch(err => console.error("[DB] Erro ao salvar Elo:", err));
 
-          // 4. SINCRONIA: Espera 1.5s porque o Flutter do perdedor tem um delay de 1.2s antes de abrir a tela.
-          // Se enviarmos antes disso, a mensagem se perde no vácuo.
           setTimeout(() => {
             const s1 = onlineUsers[winner.userId];
             const s2 = onlineUsers[loser.userId];
-
             if (s1) io.to(s1).emit('elo_update', { newElo: winner.elo, delta: finalWinPoints, rank: getRankName(winner.elo) });
-
-            if (s2) {
-              io.to(s2).emit('elo_update', { newElo: loser.elo, delta: realLossDelta, rank: getRankName(loser.elo) });
-            } else {
-              console.log(`[AVISO] Perdedor (${loser.username}) desconectou antes de receber os pontos.`);
-            }
+            if (s2) io.to(s2).emit('elo_update', { newElo: loser.elo, delta: realLossDelta, rank: getRankName(loser.elo) });
           }, 2300);
         }
       }
     } catch (e) { console.error("Erro Elo Report:", e); }
 
-    // Envia mensagem final para a sala (Game Over Visual)
     io.to(rId).emit('game_message', {
       type: 'game_over',
       reason: data.reason,
       result: data.result,
-      winnerId: socket.user.id // Quem mandou o report de vitória
+      winnerId: socket.user.id
     });
 
-    // 🔴 LIMPEZA FINAL DA MEMÓRIA
-    // Aumentado para 30 segundos para permitir Revanche
-    // Guardamos o timer no objeto global para poder cancelar na Revanche
+    // 🔴 LIMPEZA DIFERENCIADA (MINIJOGOS VS XADREZ)
     if (cleanupTimeouts[rId]) clearTimeout(cleanupTimeouts[rId]);
+
+    // Define o tempo: 4s para minijogos, 30s para o resto (Xadrez)
+    const isMinigame = ['archery_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp'].includes(match.mode);
+    const cleanupDelay = isMinigame ? 4000 : 30000;
 
     cleanupTimeouts[rId] = setTimeout(() => {
       if (activeMatches[rId]) {
         delete activeMatches[rId];
         delete cleanupTimeouts[rId];
-        console.log(`[CLEANUP] Sala ${rId} removida com sucesso após 30s.`);
+        console.log(`[CLEANUP] Sala ${rId} (${match.mode}) removida após ${cleanupDelay / 1000}s.`);
       }
-    }, 30000); // 30 Segundos
+    }, cleanupDelay);
   });
 
   // =================================================================
