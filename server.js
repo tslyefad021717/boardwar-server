@@ -558,14 +558,14 @@ io.on('connection', (socket) => {
     }
   });
   // --- SINCRONIZAÇÃO DO TÊNIS DE PEÃO ---
+  // --- SINCRONIZAÇÃO DO TÊNIS COM ESPADAS ---
   socket.on('tennis_action', (data) => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
-      // Repassa posição da raquete, bola ou placar
-      // O type vira 'tennis_sync' para o cliente filtrar
       socket.to(rId).emit('game_message', {
-        type: 'tennis_sync',
-        ...data // Repassa tudo (x, y, score, etc)
+        ...data,            // Traz ballX, ballY, etc.
+        action: data.type,  // 🔴 SALVA o que aconteceu (hit, serve, move)
+        type: 'tennis_sync' // 🔴 Define o ID para o Flutter ouvir
       });
     }
   });
