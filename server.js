@@ -43,7 +43,7 @@ const User = mongoose.model('User', userSchema);
 // 2. ESTADO GLOBAL
 // ===========================================================================
 // Adicione 'tennis' na lista de filas
-let queues = { ranked: [], friendly: [], archery: [], horse_race: [], tennis: [] }; // Adicionado horse_race
+let queues = { ranked: [], friendly: [], archery: [], horse_race: [], tennis: [], king: [] }; // Adicionado king // Adicionado horse_race
 const activeMatches = {};
 const reconnectionTimeouts = {};
 const cleanupTimeouts = {}; // [CORREÇÃO] Armazena os timers de limpeza para poder cancelar na revanche
@@ -430,12 +430,14 @@ io.on('connection', (socket) => {
     // A. LÓGICA PARA MINI-GAMES (ARCHERY, HORSE RACE & TENNIS)
     // ===========================================================
     // 🔴 Adicione 'tennis_pvp' aqui na condição
-    if (mode === 'archery_pvp' || mode === 'horse_race_pvp' || mode === 'tennis_pvp') {
+    // 🔴 Adicione 'tennis_pvp' e 'king_pvp' aqui na condição
+    if (mode === 'archery_pvp' || mode === 'horse_race_pvp' || mode === 'tennis_pvp' || mode === 'king_pvp') {
 
       let queueName = '';
       if (mode === 'archery_pvp') queueName = 'archery';
       else if (mode === 'horse_race_pvp') queueName = 'horse_race';
-      else if (mode === 'tennis_pvp') queueName = 'tennis'; // <--- AQUI
+      else if (mode === 'tennis_pvp') queueName = 'tennis';
+      else if (mode === 'king_pvp') queueName = 'king'; // <--- AQUI (REI GULOSO)
 
       // Limpa de outras filas
       queues[queueName] = queues[queueName].filter(s => s.id !== socket.id);
@@ -541,6 +543,22 @@ io.on('connection', (socket) => {
         isFrozen: data.isFrozen,
         action: data.type // 'move', 'hit', 'item'
       });
+    }
+  });
+  // --- SINCRONIZAÇÃO DO REI GULOSO ---
+  socket.on('king_sync', (data) => {
+    const rId = socket.roomId;
+    if (rId && activeMatches[rId]) {
+      // Repassa o estado completo do jogo para o oponente
+      socket.to(rId).emit('game_message', data);
+    }
+  });
+
+  socket.on('king_turn_change', () => {
+    const rId = socket.roomId;
+    if (rId && activeMatches[rId]) {
+      // Avisa que o turno mudou (para resetar timers)
+      socket.to(rId).emit('game_message', { type: 'king_turn_change' });
     }
   });
   // Adicione isso no server.js para o Mini-game
