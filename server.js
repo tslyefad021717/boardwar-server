@@ -423,19 +423,29 @@ io.on('connection', (socket) => {
   // --- MATCHMAKING (COM ATUALIZAÇÃO FORÇADA DE ELO) ---
   // --- MATCHMAKING BLINDADO (SEM FURAR FILA) ---
   // --- MATCHMAKING (COM SUPORTE A MINI-GAME E XADREZ) ---
+  // --- MATCHMAKING (COM SUPORTE A MINI-GAME E XADREZ) ---
   socket.on('find_match', async (incomingData) => {
     const mode = incomingData?.mode?.toLowerCase();
 
+    console.log(`[QUEUE] Jogador ${socket.user.name} buscando modo: ${mode}`); // Log para debug
+
     // ===========================================================
-    // A. LÓGICA PARA MINI-GAMES (ARCHERY, HORSE RACE, TENNIS & KING)
+    // A. LÓGICA PARA MINI-GAMES 
+    // Aceita: 'competitive_archery', 'competitive_horse', etc.
     // ===========================================================
-    if (mode === 'archery_pvp' || mode === 'horse_race_pvp' || mode === 'tennis_pvp' || mode === 'king_pvp') {
+    if (mode && mode.startsWith('competitive_')) {
 
       let queueName = '';
-      if (mode === 'archery_pvp') queueName = 'archery';
-      else if (mode === 'horse_race_pvp') queueName = 'horse_race';
-      else if (mode === 'tennis_pvp') queueName = 'tennis';
-      else if (mode === 'king_pvp') queueName = 'king';
+      // Mapeia o nome que vem do Flutter para a fila interna do Node
+      if (mode === 'competitive_archery') queueName = 'archery';
+      else if (mode === 'competitive_horse') queueName = 'horse_race';
+      else if (mode === 'competitive_tennis') queueName = 'tennis';
+      else if (mode === 'competitive_king') queueName = 'king';
+
+      if (!queueName) {
+        console.log("[ERROR] Modo mini-game desconhecido:", mode);
+        return;
+      }
 
       // 1. Limpa o usuário atual da fila (evita duplicidade)
       queues[queueName] = queues[queueName].filter(s => s.id !== socket.id);
@@ -443,20 +453,20 @@ io.on('connection', (socket) => {
       let opponent = null;
 
       // 2. Loop OTIMIZADO (Verifica memória direta .connected)
-      // Isso remove fantasmas sem pesar no processador
       while (queues[queueName].length > 0) {
-        const candidate = queues[queueName][0]; // Espia o primeiro da fila
+        const candidate = queues[queueName][0];
 
         if (candidate.connected) {
-          opponent = queues[queueName].shift(); // Pega ele
-          break; // Sai do loop
+          opponent = queues[queueName].shift();
+          break;
         } else {
-          queues[queueName].shift(); // Joga fora o fantasma
+          queues[queueName].shift(); // Remove fantasma
         }
       }
 
       if (opponent) {
         console.log(`[MINI-GAME] Pareando ${mode}: ${socket.user.name} vs ${opponent.user.name}`);
+        // Passamos o 'mode' original (ex: competitive_archery) para o cliente saber qual tela abrir
         startMatch(opponent, socket, mode);
       } else {
         queues[queueName].push(socket);
@@ -464,20 +474,18 @@ io.on('connection', (socket) => {
       }
       return;
     }
-    // ... (resto do código do xadrez continua igual)
 
     // ===========================================================
     // B. LÓGICA PARA O XADREZ (RANKED / FRIENDLY)
     // ===========================================================
 
-    // 1. GUARDIÃO DA FILA (BLOQUEIA QUEM JÁ ESTÁ EM PARTIDA DE XADREZ)
+    // 1. GUARDIÃO DA FILA
     const ongoingMatchId = Object.keys(activeMatches).find(roomId => {
       const m = activeMatches[roomId];
       return (m.p1.id === socket.user.id || m.p2.id === socket.user.id) && !m.isFinished;
     });
 
     if (ongoingMatchId) {
-      console.log(`[BLOCK] ${socket.user.name} tentou entrar na fila mas já está na sala ${ongoingMatchId}.`);
       socket.emit('match_error', 'Você ainda tem uma batalha em andamento!');
       return;
     }
@@ -503,7 +511,6 @@ io.on('connection', (socket) => {
         if (user) {
           socket.user.elo = user.elo;
           socket.user.name = user.username;
-          console.log(`[QUEUE] ${user.username} entrando com Elo ATUALIZADO: ${user.elo}`);
         }
       } catch (err) {
         console.error("Erro ao atualizar Elo na fila:", err);
@@ -891,9 +898,9 @@ async function startMatch(p1, p2, mode) {
   p2.join(roomId); p2.roomId = roomId;
 
   // --- [SEGURANÇA] SÓ GERA SEED SE FOR A CORRIDA ---
-  // Se for xadrez (ranked/friendly), mapSeed fica 0 (padrão) e nem vai no pacote
+  // Verifica se o modo contém 'horse'
   let mapSeed = 0;
-  if (mode === 'horse_race_pvp') {
+  if (mode && mode.includes('horse')) {
     mapSeed = Math.floor(Math.random() * 1000000);
   }
 
@@ -915,25 +922,33 @@ async function startMatch(p1, p2, mode) {
   };
 
   // Payload Base
+  // 🔴 ADICIONADO: type: 'match_start' para o Flutter reconhecer
   const p1Payload = {
+    type: 'match_start',
     isPlayer1: true,
     opponent: { name: p2.user.name, elo: elo2, rank: getRankName(elo2) },
     mode
   };
 
   const p2Payload = {
+    type: 'match_start',
     isPlayer1: false,
     opponent: { name: p1.user.name, elo: elo1, rank: getRankName(elo1) },
     mode
   };
 
   // --- [INJEÇÃO CIRÚRGICA] ---
-  // Só adiciona o seed ao pacote se for o modo correto
-  if (mode === 'horse_race_pvp') {
+  if (mode && mode.includes('horse')) {
     p1Payload.mapSeed = mapSeed;
     p2Payload.mapSeed = mapSeed;
   }
 
+  // 🔴 MUDANÇA IMPORTANTE: Emitindo como 'game_message' 
+  // para cair no listener padrão do OnlineService.instance.onMessage
+  p1.emit('game_message', p1Payload);
+  p2.emit('game_message', p2Payload);
+
+  // (Opcional) Mantém compatibilidade se houver listener antigo
   p1.emit('match_found', p1Payload);
   p2.emit('match_found', p2Payload);
 }
