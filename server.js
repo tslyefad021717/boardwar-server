@@ -424,38 +424,31 @@ io.on('connection', (socket) => {
   // --- MATCHMAKING BLINDADO (SEM FURAR FILA) ---
   // --- MATCHMAKING (COM SUPORTE A MINI-GAME E XADREZ) ---
   // --- MATCHMAKING (COM SUPORTE A MINI-GAME E XADREZ) ---
+  // --- MATCHMAKING UNIFICADO (XADREZ + MINI-GAMES) ---
   socket.on('find_match', async (incomingData) => {
     const mode = incomingData?.mode?.toLowerCase();
 
-    console.log(`[QUEUE] Jogador ${socket.user.name} buscando modo: ${mode}`); // Log para debug
+    console.log(`[QUEUE] Jogador ${socket.user.name} entrou na fila: ${mode}`);
 
     // ===========================================================
-    // A. LÓGICA PARA MINI-GAMES 
-    // Aceita: 'competitive_archery', 'competitive_horse', etc.
+    // A. MINI-GAMES (Archery, Horse, Tennis, King)
     // ===========================================================
     if (mode && mode.startsWith('competitive_')) {
-
       let queueName = '';
-      // Mapeia o nome que vem do Flutter para a fila interna do Node
-      if (mode === 'competitive_archery') queueName = 'archery';
-      else if (mode === 'competitive_horse') queueName = 'horse_race';
-      else if (mode === 'competitive_tennis') queueName = 'tennis';
-      else if (mode === 'competitive_king') queueName = 'king';
+      if (mode === 'competitive_archery' || mode === 'archery_pvp') queueName = 'archery';
+      else if (mode === 'competitive_horse' || mode === 'horse_race_pvp') queueName = 'horse_race';
+      else if (mode === 'competitive_tennis' || mode === 'tennis_pvp') queueName = 'tennis';
+      else if (mode === 'competitive_king' || mode === 'king_pvp') queueName = 'king';
 
-      if (!queueName) {
-        console.log("[ERROR] Modo mini-game desconhecido:", mode);
-        return;
-      }
+      if (!queueName) return; // Modo inválido
 
-      // 1. Limpa o usuário atual da fila (evita duplicidade)
+      // Limpa user da fila
       queues[queueName] = queues[queueName].filter(s => s.id !== socket.id);
 
       let opponent = null;
-
-      // 2. Loop OTIMIZADO (Verifica memória direta .connected)
+      // Procura oponente vivo
       while (queues[queueName].length > 0) {
         const candidate = queues[queueName][0];
-
         if (candidate.connected) {
           opponent = queues[queueName].shift();
           break;
@@ -465,35 +458,34 @@ io.on('connection', (socket) => {
       }
 
       if (opponent) {
-        console.log(`[MINI-GAME] Pareando ${mode}: ${socket.user.name} vs ${opponent.user.name}`);
-        // Passamos o 'mode' original (ex: competitive_archery) para o cliente saber qual tela abrir
+        // Envia o modo original (ex: 'competitive_archery') para o Flutter saber qual tela abrir
         startMatch(opponent, socket, mode);
       } else {
         queues[queueName].push(socket);
-        socket.emit('status', "Buscando oponente para a disputa...");
+        socket.emit('status', "Buscando oponente...");
       }
       return;
     }
 
     // ===========================================================
-    // B. LÓGICA PARA O XADREZ (RANKED / FRIENDLY)
+    // B. BATALHA GLOBAL (Xadrez Ranked / Friendly)
     // ===========================================================
 
-    // 1. GUARDIÃO DA FILA
+    // 1. Verifica se já está jogando
     const ongoingMatchId = Object.keys(activeMatches).find(roomId => {
       const m = activeMatches[roomId];
       return (m.p1.id === socket.user.id || m.p2.id === socket.user.id) && !m.isFinished;
     });
 
     if (ongoingMatchId) {
-      socket.emit('match_error', 'Você ainda tem uma batalha em andamento!');
+      socket.emit('match_error', 'Você já está em uma batalha!');
       return;
     }
 
-    // 2. DEFINIÇÃO DO MODO DE XADREZ
+    // 2. Define modo
     const chessMode = (mode === 'friendly') ? 'friendly' : 'ranked';
 
-    // Limpa o usuário de outras filas de xadrez
+    // Limpa de outras filas
     queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
     queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
 
@@ -505,400 +497,449 @@ io.on('connection', (socket) => {
         queues.friendly.push(socket);
       }
     } else {
-      // --- ATUALIZAÇÃO DE ELO NA FILA (RANKED) ---
+      // --- RANKED GLOBAL ---
+      // Atualiza Elo antes de entrar
       try {
         const user = await User.findOne({ userId: socket.user.id });
         if (user) {
           socket.user.elo = user.elo;
           socket.user.name = user.username;
         }
-      } catch (err) {
-        console.error("Erro ao atualizar Elo na fila:", err);
-      }
+      } catch (err) { }
 
       socket.joinedAt = Date.now();
       queues.ranked.push(socket);
 
-      // Chama a lógica de pareamento dinâmico
+      // Tenta achar imediatamente (além do setInterval)
       findMatchDynamic();
     }
 
-    socket.emit('status', `Buscando oponente...`);
-  }); // <--- FIM DO socket.on('find_match')
-
-  socket.on('leave_queue', () => {
-    queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
-    queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
+    socket.emit('status', "Buscando oponente digno...");
   });
 
-  // --- GAMEPLAY ---
-  socket.on('game_move', (msg) => {
-    const rId = socket.roomId;
-    if (rId && activeMatches[rId]) {
-      if (msg && typeof msg === 'object') {
-        const match = activeMatches[rId];
-        match.moveHistory.push(msg);
+  // ===========================================================
+  // B. LÓGICA PARA O XADREZ (RANKED / FRIENDLY)
+  // ===========================================================
 
-        // --- [NOVO] ATUALIZA O TURNO SE O CLIENTE DISSE QUE ACABOU ---
-        if (msg.turnEnded === true) {
-          match.isPlayer1Turn = !match.isPlayer1Turn;
-        }
-        // -------------------------------------------------------------
+  // 1. GUARDIÃO DA FILA
+  const ongoingMatchId = Object.keys(activeMatches).find(roomId => {
+    const m = activeMatches[roomId];
+    return (m.p1.id === socket.user.id || m.p2.id === socket.user.id) && !m.isFinished;
+  });
 
-        socket.to(rId).emit('game_message', msg);
+  if (ongoingMatchId) {
+    socket.emit('match_error', 'Você ainda tem uma batalha em andamento!');
+    return;
+  }
+
+  // 2. DEFINIÇÃO DO MODO DE XADREZ
+  const chessMode = (mode === 'friendly') ? 'friendly' : 'ranked';
+
+  // Limpa o usuário de outras filas de xadrez
+  queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
+  queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
+
+  if (chessMode === 'friendly') {
+    const opponent = queues.friendly.shift();
+    if (opponent) {
+      startMatch(opponent, socket, 'friendly');
+    } else {
+      queues.friendly.push(socket);
+    }
+  } else {
+    // --- ATUALIZAÇÃO DE ELO NA FILA (RANKED) ---
+    try {
+      const user = await User.findOne({ userId: socket.user.id });
+      if (user) {
+        socket.user.elo = user.elo;
+        socket.user.name = user.username;
       }
+    } catch (err) {
+      console.error("Erro ao atualizar Elo na fila:", err);
     }
-  });
-  // --- SINCRONIZAÇÃO DA CORRIDA DE CAVALARIA ---
-  socket.on('horse_action', (data) => {
-    const rId = socket.roomId;
-    if (rId && activeMatches[rId]) {
-      // Repassa a posição, pista ou colisão para o oponente em tempo real
-      socket.to(rId).emit('game_message', {
-        type: 'horse_sync',
-        lane: data.lane,
-        distance: data.distance,
-        isFrozen: data.isFrozen,
-        action: data.type // 'move', 'hit', 'item'
-      });
-    }
-  });
-  // --- SINCRONIZAÇÃO DO REI GULOSO ---
-  socket.on('king_sync', (data) => {
-    const rId = socket.roomId;
-    if (rId && activeMatches[rId]) {
-      // Repassa o estado completo do jogo para o oponente
-      socket.to(rId).emit('game_message', data);
-    }
-  });
 
-  socket.on('king_turn_change', () => {
-    const rId = socket.roomId;
-    if (rId && activeMatches[rId]) {
-      // Avisa que o turno mudou (para resetar timers)
-      socket.to(rId).emit('game_message', { type: 'king_turn_change' });
-    }
-  });
-  // Adicione isso no server.js para o Mini-game
-  // Lógica corrigida do Archery (igual ao horse_race e xadrez)
-  socket.on('archery_action', (data) => {
-    const room = socket.roomId; // <--- CORREÇÃO: Usa o ID que já está salvo no socket
+    socket.joinedAt = Date.now();
+    queues.ranked.push(socket);
 
-    // Verifica se a sala existe e se a partida está ativa (segurança extra)
-    if (room && activeMatches[room]) {
-      socket.to(room).emit('game_message', {
-        type: 'archery_sync',
-        x: data.x,
-        action: data.type
-      });
-    }
-  });
-  // --- SINCRONIZAÇÃO DO TÊNIS DE PEÃO ---
-  // --- SINCRONIZAÇÃO DO TÊNIS COM ESPADAS ---
-  socket.on('tennis_action', (data) => {
-    const rId = socket.roomId;
-    if (rId && activeMatches[rId]) {
-      socket.to(rId).emit('game_message', {
-        ...data,            // Traz ballX, ballY, etc.
-        action: data.type,  // 🔴 SALVA o que aconteceu (hit, serve, move)
-        type: 'tennis_sync' // 🔴 Define o ID para o Flutter ouvir
-      });
-    }
-  });
+    // Chama a lógica de pareamento dinâmico
+    findMatchDynamic();
+  }
 
-  // --- [NOVO] ATUALIZAÇÃO DE TURNO NO SERVIDOR (TURN_PASS EXPLÍCITO) ---
-  socket.on('turn_pass', (data) => {
-    const rId = socket.roomId;
-    if (rId && activeMatches[rId]) {
-      // Inverte o turno no servidor
-      activeMatches[rId].isPlayer1Turn = !activeMatches[rId].isPlayer1Turn;
+  socket.emit('status', `Buscando oponente...`);
+}); // <--- FIM DO socket.on('find_match')
 
-      // Repassa para o oponente
-      socket.to(rId).emit('game_message', {
-        type: 'turn_pass',
-        p1Time: data.p1Time,
-        p2Time: data.p2Time
-      });
-    }
-  });
+socket.on('leave_queue', () => {
+  queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
+  queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
+});
 
-  // --- [NOVO] O "DOUTOR DE TURNO" (CORREÇÃO AUTOMÁTICA DE DEADLOCK) ---
-  socket.on('check_turn_integrity', (clientThinkIsP1) => {
-    const rId = socket.roomId;
-    if (rId && activeMatches[rId]) {
-      const serverThinkIsP1 = activeMatches[rId].isPlayer1Turn;
+// --- GAMEPLAY ---
+socket.on('game_move', (msg) => {
+  const rId = socket.roomId;
+  if (rId && activeMatches[rId]) {
+    if (msg && typeof msg === 'object') {
+      const match = activeMatches[rId];
+      match.moveHistory.push(msg);
 
-      // Se o cliente discorda do servidor sobre de quem é a vez
-      if (clientThinkIsP1 !== serverThinkIsP1) {
-        console.log(`[FIX] Desincronia de turno detectada na sala ${rId}. Forçando Sync.`);
-        // Força AMBOS a ressincronizarem para garantir
-        io.to(rId).emit('game_message', { type: 'force_full_sync_request' });
+      // --- [NOVO] ATUALIZA O TURNO SE O CLIENTE DISSE QUE ACABOU ---
+      if (msg.turnEnded === true) {
+        match.isPlayer1Turn = !match.isPlayer1Turn;
       }
+      // -------------------------------------------------------------
+
+      socket.to(rId).emit('game_message', msg);
     }
-  });
+  }
+});
+// --- SINCRONIZAÇÃO DA CORRIDA DE CAVALARIA ---
+socket.on('horse_action', (data) => {
+  const rId = socket.roomId;
+  if (rId && activeMatches[rId]) {
+    // Repassa a posição, pista ou colisão para o oponente em tempo real
+    socket.to(rId).emit('game_message', {
+      type: 'horse_sync',
+      lane: data.lane,
+      distance: data.distance,
+      isFrozen: data.isFrozen,
+      action: data.type // 'move', 'hit', 'item'
+    });
+  }
+});
+// --- SINCRONIZAÇÃO DO REI GULOSO ---
+socket.on('king_sync', (data) => {
+  const rId = socket.roomId;
+  if (rId && activeMatches[rId]) {
+    // Repassa o estado completo do jogo para o oponente
+    socket.to(rId).emit('game_message', data);
+  }
+});
 
-  socket.on('provide_game_state', (data) => {
-    if (socket.roomId) socket.to(socket.roomId).emit('sync_game_state', data);
-  });
+socket.on('king_turn_change', () => {
+  const rId = socket.roomId;
+  if (rId && activeMatches[rId]) {
+    // Avisa que o turno mudou (para resetar timers)
+    socket.to(rId).emit('game_message', { type: 'king_turn_change' });
+  }
+});
+// Adicione isso no server.js para o Mini-game
+// Lógica corrigida do Archery (igual ao horse_race e xadrez)
+socket.on('archery_action', (data) => {
+  const room = socket.roomId; // <--- CORREÇÃO: Usa o ID que já está salvo no socket
 
-  // --- REVANCHE ---
-  socket.on('request_rematch', () => {
-    if (socket.roomId && activeMatches[socket.roomId]) {
-      socket.to(socket.roomId).emit('game_message', { type: 'rematch_requested' });
+  // Verifica se a sala existe e se a partida está ativa (segurança extra)
+  if (room && activeMatches[room]) {
+    socket.to(room).emit('game_message', {
+      type: 'archery_sync',
+      x: data.x,
+      action: data.type
+    });
+  }
+});
+// --- SINCRONIZAÇÃO DO TÊNIS DE PEÃO ---
+// --- SINCRONIZAÇÃO DO TÊNIS COM ESPADAS ---
+socket.on('tennis_action', (data) => {
+  const rId = socket.roomId;
+  if (rId && activeMatches[rId]) {
+    socket.to(rId).emit('game_message', {
+      ...data,            // Traz ballX, ballY, etc.
+      action: data.type,  // 🔴 SALVA o que aconteceu (hit, serve, move)
+      type: 'tennis_sync' // 🔴 Define o ID para o Flutter ouvir
+    });
+  }
+});
+
+// --- [NOVO] ATUALIZAÇÃO DE TURNO NO SERVIDOR (TURN_PASS EXPLÍCITO) ---
+socket.on('turn_pass', (data) => {
+  const rId = socket.roomId;
+  if (rId && activeMatches[rId]) {
+    // Inverte o turno no servidor
+    activeMatches[rId].isPlayer1Turn = !activeMatches[rId].isPlayer1Turn;
+
+    // Repassa para o oponente
+    socket.to(rId).emit('game_message', {
+      type: 'turn_pass',
+      p1Time: data.p1Time,
+      p2Time: data.p2Time
+    });
+  }
+});
+
+// --- [NOVO] O "DOUTOR DE TURNO" (CORREÇÃO AUTOMÁTICA DE DEADLOCK) ---
+socket.on('check_turn_integrity', (clientThinkIsP1) => {
+  const rId = socket.roomId;
+  if (rId && activeMatches[rId]) {
+    const serverThinkIsP1 = activeMatches[rId].isPlayer1Turn;
+
+    // Se o cliente discorda do servidor sobre de quem é a vez
+    if (clientThinkIsP1 !== serverThinkIsP1) {
+      console.log(`[FIX] Desincronia de turno detectada na sala ${rId}. Forçando Sync.`);
+      // Força AMBOS a ressincronizarem para garantir
+      io.to(rId).emit('game_message', { type: 'force_full_sync_request' });
     }
-  });
+  }
+});
 
-  socket.on('respond_rematch', (data) => {
-    const rId = socket.roomId;
-    if (rId && activeMatches[rId]) {
-      if (data.accepted) {
+socket.on('provide_game_state', (data) => {
+  if (socket.roomId) socket.to(socket.roomId).emit('sync_game_state', data);
+});
 
-        // [CORREÇÃO] CANCELA A LIMPEZA AUTOMÁTICA DA SALA
-        // Isso impede que o servidor apague a sala no meio da revanche!
-        if (cleanupTimeouts[rId]) {
-          clearTimeout(cleanupTimeouts[rId]);
-          delete cleanupTimeouts[rId];
-          console.log(`[REMATCH] Timer de limpeza cancelado para sala ${rId}`);
-        }
+// --- REVANCHE ---
+socket.on('request_rematch', () => {
+  if (socket.roomId && activeMatches[socket.roomId]) {
+    socket.to(socket.roomId).emit('game_message', { type: 'rematch_requested' });
+  }
+});
 
-        const match = activeMatches[rId];
-        match.moveHistory = [];
-        match.p1Time = 1020;
-        match.p2Time = 1020;
-        match.isPlayer1Turn = true; // [NOVO] Reseta turno para P1
-        match.isFinished = false; // [IMPORTANTE] Reseta a trava para o novo jogo
-        io.to(rId).emit('game_message', { type: 'rematch_start' });
-      } else {
-        io.to(rId).emit('game_message', { type: 'rematch_failed' });
-        delete activeMatches[rId];
+socket.on('respond_rematch', (data) => {
+  const rId = socket.roomId;
+  if (rId && activeMatches[rId]) {
+    if (data.accepted) {
+
+      // [CORREÇÃO] CANCELA A LIMPEZA AUTOMÁTICA DA SALA
+      // Isso impede que o servidor apague a sala no meio da revanche!
+      if (cleanupTimeouts[rId]) {
+        clearTimeout(cleanupTimeouts[rId]);
+        delete cleanupTimeouts[rId];
+        console.log(`[REMATCH] Timer de limpeza cancelado para sala ${rId}`);
       }
-    }
-  });
 
-  socket.on('cancel_rematch', () => {
-    const rId = socket.roomId;
-    if (rId && activeMatches[rId]) {
+      const match = activeMatches[rId];
+      match.moveHistory = [];
+      match.p1Time = 1020;
+      match.p2Time = 1020;
+      match.isPlayer1Turn = true; // [NOVO] Reseta turno para P1
+      match.isFinished = false; // [IMPORTANTE] Reseta a trava para o novo jogo
+      io.to(rId).emit('game_message', { type: 'rematch_start' });
+    } else {
       io.to(rId).emit('game_message', { type: 'rematch_failed' });
-      if (reconnectionTimeouts[rId]) {
-        clearTimeout(reconnectionTimeouts[rId]);
-        delete reconnectionTimeouts[rId];
-      }
       delete activeMatches[rId];
     }
-  });
+  }
+});
 
-  // =================================================================
-  // 6. GAME OVER BLINDADO (CORREÇÃO DE PONTUAÇÃO DUPLICADA)
-  // =================================================================
-  // =================================================================
-  // 6. GAME OVER BLINDADO (COM SEPARAÇÃO DE TEMPO DE LIMPEZA)
-  // =================================================================
-  // =================================================================
-  // 6. GAME OVER BLINDADO (COM SEPARAÇÃO DE TEMPO DE LIMPEZA)
-  // =================================================================
-  socket.on('game_over_report', async (data) => {
-    const rId = socket.roomId;
-
-    if (!rId || !activeMatches[rId]) return;
-
-    const match = activeMatches[rId];
-
-    if (match.isFinished) {
-      console.log(`[GAME OVER] Ignorando report duplicado da sala ${rId}`);
-      return;
-    }
-
-    match.isFinished = true;
-
+socket.on('cancel_rematch', () => {
+  const rId = socket.roomId;
+  if (rId && activeMatches[rId]) {
+    io.to(rId).emit('game_message', { type: 'rematch_failed' });
     if (reconnectionTimeouts[rId]) {
-      console.log(`[GAME OVER] Cancelando timer de desconexão da sala ${rId}.`);
       clearTimeout(reconnectionTimeouts[rId]);
       delete reconnectionTimeouts[rId];
     }
-
-    console.log(`[GAME OVER] Sala ${rId} - Result: ${data.result}, Reason: ${data.reason}`);
-
-    try {
-      if (match.mode === 'ranked') {
-        const p1Data = match.p1;
-        const p2Data = match.p2;
-
-        const user1 = await User.findOne({ userId: p1Data.id });
-        const user2 = await User.findOne({ userId: p2Data.id });
-
-        if (user1 && user2) {
-          const isReporterP1 = (socket.user.id === p1Data.id);
-
-          let winner, loser;
-          let winnerScore = 0, loserScore = 0;
-
-          if (['win', 'victory'].includes(data.result?.toLowerCase())) {
-            if (isReporterP1) {
-              winner = user1; loser = user2;
-              winnerScore = data.myScore || 0; loserScore = data.oppScore || 0;
-            } else {
-              winner = user2; loser = user1;
-              winnerScore = data.oppScore || 0; loserScore = data.myScore || 0;
-            }
-          } else {
-            if (isReporterP1) {
-              winner = user2; loser = user1;
-              winnerScore = data.oppScore || 0; loserScore = data.myScore || 0;
-            } else {
-              winner = user1; loser = user2;
-              winnerScore = data.myScore || 0; loserScore = data.oppScore || 0;
-            }
-          }
-
-          const winnerEloBefore = winner.elo;
-          const loserEloBefore = loser.elo;
-
-          const realWinDelta = calculateEloDelta('win', data.reason, winnerScore, loserScore, winnerEloBefore, loserEloBefore);
-          const finalWinPoints = Math.abs(realWinDelta) > 0 ? Math.abs(realWinDelta) : 10;
-          const realLossDelta = calculateEloDelta('loss', data.reason, loserScore, winnerScore, loserEloBefore, winnerEloBefore);
-
-          console.log(`[ELO CALC] Winner: +${finalWinPoints} | Loser: ${realLossDelta}`);
-
-          winner.elo += finalWinPoints;
-          winner.wins++;
-          loser.elo = Math.max(0, loser.elo + realLossDelta);
-          loser.losses++;
-
-          Promise.all([winner.save(), loser.save()])
-            .catch(err => console.error("[DB] Erro ao salvar Elo:", err));
-
-          setTimeout(() => {
-            const s1 = onlineUsers[winner.userId];
-            const s2 = onlineUsers[loser.userId];
-            if (s1) io.to(s1).emit('elo_update', { newElo: winner.elo, delta: finalWinPoints, rank: getRankName(winner.elo) });
-            if (s2) io.to(s2).emit('elo_update', { newElo: loser.elo, delta: realLossDelta, rank: getRankName(loser.elo) });
-          }, 2300);
-        }
-      }
-    } catch (e) { console.error("Erro Elo Report:", e); }
-
-    io.to(rId).emit('game_message', {
-      type: 'game_over',
-      reason: data.reason,
-      result: data.result,
-      winnerId: socket.user.id
-    });
-
-    // 🔴 LIMPEZA DIFERENCIADA (MINIJOGOS VS XADREZ)
-    if (cleanupTimeouts[rId]) clearTimeout(cleanupTimeouts[rId]);
-
-    // Define o tempo: 4s para minijogos, 30s para o resto (Xadrez)
-    const isMinigame = ['archery_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp'].includes(match.mode);
-    const cleanupDelay = isMinigame ? 4000 : 30000;
-
-    cleanupTimeouts[rId] = setTimeout(() => {
-      if (activeMatches[rId]) {
-        delete activeMatches[rId];
-        delete cleanupTimeouts[rId];
-        console.log(`[CLEANUP] Sala ${rId} (${match.mode}) removida após ${cleanupDelay / 1000}s.`);
-      }
-    }, cleanupDelay);
-  });
-
-  // =================================================================
-  // 7. DESCONEXÃO BLINDADA (IGNORA FANTASMAS)
-  // =================================================================
-  socket.on('disconnect', async () => {
-    // 1. VERIFICAÇÃO DE FANTASMA (CRUCIAL!)
-    const currentSocketId = onlineUsers[socket.user.id];
-    if (currentSocketId && currentSocketId !== socket.id) {
-      console.log(`[IGNORE] Desconexão ignorada para ${socket.user.name} (Socket velho caindo, novo já ativo).`);
-      return;
-    }
-
-    if (onlineUsers[socket.user.id] === socket.id) {
-      delete onlineUsers[socket.user.id];
-    }
-
-    queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
-    queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
-
-    const rId = socket.roomId;
-
-    // Se estava em partida E a partida NÃO acabou ainda...
-    if (rId && activeMatches[rId] && !activeMatches[rId].isFinished) {
-      console.log(`[DISCONNECT] ${socket.user.name} caiu da sala ${rId}. Iniciando timer de 25s...`);
-
-      // Avisa o oponente que o cara caiu (para mostrar "Aguardando..." na tela)
-      socket.to(rId).emit('game_message', { type: 'opponent_disconnected' });
-
-      // ⏳ O TIMER DE TOLERÂNCIA (Aqui evita a derrota na micro-queda)
-      reconnectionTimeouts[rId] = setTimeout(async () => {
-
-        // Checa se a partida ainda existe e se não foi finalizada nesse meio tempo
-        if (activeMatches[rId]) {
-
-          // Se a partida JÁ ACABOU (isFinished), cancela tudo.
-          if (activeMatches[rId].isFinished) return;
-
-          // Verifica se o usuário voltou (está na lista de onlineUsers com novo socket?)
-          const isUserBack = onlineUsers[socket.user.id];
-
-          if (!isUserBack) {
-            // AGORA SIM: Passaram 25s e ele não voltou. É derrota.
-            console.log(`[TIMEOUT] ${socket.user.name} não voltou. Declarando WO.`);
-
-            const match = activeMatches[rId];
-            match.isFinished = true; // Ativa a trava agora
-
-            // Avisa o oponente que ele ganhou por WO
-            io.to(rId).emit('game_message', {
-              type: 'game_over',
-              reason: 'opponent_disconnected',
-              result: 'win_by_wo'
-            });
-
-            // Lógica de punição por WO (Ranked)
-            if (match.mode === 'ranked') {
-              try {
-                const quitter = await User.findOne({ userId: socket.user.id });
-                const winnerId = (match.p1.id === socket.user.id) ? match.p2.id : match.p1.id;
-                const winner = await User.findOne({ userId: winnerId });
-
-                if (quitter && winner) {
-                  // Punição fixa de -17 por quitar
-                  quitter.elo = Math.max(0, quitter.elo - 17);
-                  quitter.losses++;
-                  await quitter.save();
-
-                  // Vencedor ganha pontos (cálculo normal de vitória)
-                  const delta = calculateEloDelta('win', 'opponent_disconnected', 0, 0, winner.elo, quitter.elo);
-                  const finalWinPoints = Math.abs(delta) > 0 ? Math.abs(delta) : 10;
-                  winner.elo += finalWinPoints;
-                  winner.wins++;
-                  await winner.save();
-
-                  // Tenta avisar o vencedor do novo Elo (se estiver online)
-                  const sWinner = onlineUsers[winner.userId];
-                  if (sWinner) io.to(sWinner).emit('elo_update', { newElo: winner.elo, delta: finalWinPoints, rank: getRankName(winner.elo) });
-                }
-              } catch (e) { console.error("Erro WO:", e); }
-            }
-
-            // Limpeza final
-            delete activeMatches[rId];
-            delete reconnectionTimeouts[rId];
-          } else {
-            console.log(`[TIMEOUT] Cancelado. Usuário ${socket.user.name} já voltou.`);
-          }
-        }
-      }, 25000); // 25 segundos
-    }
-  });
+    delete activeMatches[rId];
+  }
 });
 
+// =================================================================
+// 6. GAME OVER BLINDADO (CORREÇÃO DE PONTUAÇÃO DUPLICADA)
+// =================================================================
+// =================================================================
+// 6. GAME OVER BLINDADO (COM SEPARAÇÃO DE TEMPO DE LIMPEZA)
+// =================================================================
+// =================================================================
+// 6. GAME OVER BLINDADO (COM SEPARAÇÃO DE TEMPO DE LIMPEZA)
+// =================================================================
+socket.on('game_over_report', async (data) => {
+  const rId = socket.roomId;
+
+  if (!rId || !activeMatches[rId]) return;
+
+  const match = activeMatches[rId];
+
+  if (match.isFinished) {
+    console.log(`[GAME OVER] Ignorando report duplicado da sala ${rId}`);
+    return;
+  }
+
+  match.isFinished = true;
+
+  if (reconnectionTimeouts[rId]) {
+    console.log(`[GAME OVER] Cancelando timer de desconexão da sala ${rId}.`);
+    clearTimeout(reconnectionTimeouts[rId]);
+    delete reconnectionTimeouts[rId];
+  }
+
+  console.log(`[GAME OVER] Sala ${rId} - Result: ${data.result}, Reason: ${data.reason}`);
+
+  try {
+    if (match.mode === 'ranked') {
+      const p1Data = match.p1;
+      const p2Data = match.p2;
+
+      const user1 = await User.findOne({ userId: p1Data.id });
+      const user2 = await User.findOne({ userId: p2Data.id });
+
+      if (user1 && user2) {
+        const isReporterP1 = (socket.user.id === p1Data.id);
+
+        let winner, loser;
+        let winnerScore = 0, loserScore = 0;
+
+        if (['win', 'victory'].includes(data.result?.toLowerCase())) {
+          if (isReporterP1) {
+            winner = user1; loser = user2;
+            winnerScore = data.myScore || 0; loserScore = data.oppScore || 0;
+          } else {
+            winner = user2; loser = user1;
+            winnerScore = data.oppScore || 0; loserScore = data.myScore || 0;
+          }
+        } else {
+          if (isReporterP1) {
+            winner = user2; loser = user1;
+            winnerScore = data.oppScore || 0; loserScore = data.myScore || 0;
+          } else {
+            winner = user1; loser = user2;
+            winnerScore = data.myScore || 0; loserScore = data.oppScore || 0;
+          }
+        }
+
+        const winnerEloBefore = winner.elo;
+        const loserEloBefore = loser.elo;
+
+        const realWinDelta = calculateEloDelta('win', data.reason, winnerScore, loserScore, winnerEloBefore, loserEloBefore);
+        const finalWinPoints = Math.abs(realWinDelta) > 0 ? Math.abs(realWinDelta) : 10;
+        const realLossDelta = calculateEloDelta('loss', data.reason, loserScore, winnerScore, loserEloBefore, winnerEloBefore);
+
+        console.log(`[ELO CALC] Winner: +${finalWinPoints} | Loser: ${realLossDelta}`);
+
+        winner.elo += finalWinPoints;
+        winner.wins++;
+        loser.elo = Math.max(0, loser.elo + realLossDelta);
+        loser.losses++;
+
+        Promise.all([winner.save(), loser.save()])
+          .catch(err => console.error("[DB] Erro ao salvar Elo:", err));
+
+        setTimeout(() => {
+          const s1 = onlineUsers[winner.userId];
+          const s2 = onlineUsers[loser.userId];
+          if (s1) io.to(s1).emit('elo_update', { newElo: winner.elo, delta: finalWinPoints, rank: getRankName(winner.elo) });
+          if (s2) io.to(s2).emit('elo_update', { newElo: loser.elo, delta: realLossDelta, rank: getRankName(loser.elo) });
+        }, 2300);
+      }
+    }
+  } catch (e) { console.error("Erro Elo Report:", e); }
+
+  io.to(rId).emit('game_message', {
+    type: 'game_over',
+    reason: data.reason,
+    result: data.result,
+    winnerId: socket.user.id
+  });
+
+  // 🔴 LIMPEZA DIFERENCIADA (MINIJOGOS VS XADREZ)
+  if (cleanupTimeouts[rId]) clearTimeout(cleanupTimeouts[rId]);
+
+  // Define o tempo: 4s para minijogos, 30s para o resto (Xadrez)
+  const isMinigame = ['archery_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp'].includes(match.mode);
+  const cleanupDelay = isMinigame ? 4000 : 30000;
+
+  cleanupTimeouts[rId] = setTimeout(() => {
+    if (activeMatches[rId]) {
+      delete activeMatches[rId];
+      delete cleanupTimeouts[rId];
+      console.log(`[CLEANUP] Sala ${rId} (${match.mode}) removida após ${cleanupDelay / 1000}s.`);
+    }
+  }, cleanupDelay);
+});
+
+// =================================================================
+// 7. DESCONEXÃO BLINDADA (IGNORA FANTASMAS)
+// =================================================================
+socket.on('disconnect', async () => {
+  // 1. VERIFICAÇÃO DE FANTASMA (CRUCIAL!)
+  const currentSocketId = onlineUsers[socket.user.id];
+  if (currentSocketId && currentSocketId !== socket.id) {
+    console.log(`[IGNORE] Desconexão ignorada para ${socket.user.name} (Socket velho caindo, novo já ativo).`);
+    return;
+  }
+
+  if (onlineUsers[socket.user.id] === socket.id) {
+    delete onlineUsers[socket.user.id];
+  }
+
+  queues.ranked = queues.ranked.filter(s => s.id !== socket.id);
+  queues.friendly = queues.friendly.filter(s => s.id !== socket.id);
+
+  const rId = socket.roomId;
+
+  // Se estava em partida E a partida NÃO acabou ainda...
+  if (rId && activeMatches[rId] && !activeMatches[rId].isFinished) {
+    console.log(`[DISCONNECT] ${socket.user.name} caiu da sala ${rId}. Iniciando timer de 25s...`);
+
+    // Avisa o oponente que o cara caiu (para mostrar "Aguardando..." na tela)
+    socket.to(rId).emit('game_message', { type: 'opponent_disconnected' });
+
+    // ⏳ O TIMER DE TOLERÂNCIA (Aqui evita a derrota na micro-queda)
+    reconnectionTimeouts[rId] = setTimeout(async () => {
+
+      // Checa se a partida ainda existe e se não foi finalizada nesse meio tempo
+      if (activeMatches[rId]) {
+
+        // Se a partida JÁ ACABOU (isFinished), cancela tudo.
+        if (activeMatches[rId].isFinished) return;
+
+        // Verifica se o usuário voltou (está na lista de onlineUsers com novo socket?)
+        const isUserBack = onlineUsers[socket.user.id];
+
+        if (!isUserBack) {
+          // AGORA SIM: Passaram 25s e ele não voltou. É derrota.
+          console.log(`[TIMEOUT] ${socket.user.name} não voltou. Declarando WO.`);
+
+          const match = activeMatches[rId];
+          match.isFinished = true; // Ativa a trava agora
+
+          // Avisa o oponente que ele ganhou por WO
+          io.to(rId).emit('game_message', {
+            type: 'game_over',
+            reason: 'opponent_disconnected',
+            result: 'win_by_wo'
+          });
+
+          // Lógica de punição por WO (Ranked)
+          if (match.mode === 'ranked') {
+            try {
+              const quitter = await User.findOne({ userId: socket.user.id });
+              const winnerId = (match.p1.id === socket.user.id) ? match.p2.id : match.p1.id;
+              const winner = await User.findOne({ userId: winnerId });
+
+              if (quitter && winner) {
+                // Punição fixa de -17 por quitar
+                quitter.elo = Math.max(0, quitter.elo - 17);
+                quitter.losses++;
+                await quitter.save();
+
+                // Vencedor ganha pontos (cálculo normal de vitória)
+                const delta = calculateEloDelta('win', 'opponent_disconnected', 0, 0, winner.elo, quitter.elo);
+                const finalWinPoints = Math.abs(delta) > 0 ? Math.abs(delta) : 10;
+                winner.elo += finalWinPoints;
+                winner.wins++;
+                await winner.save();
+
+                // Tenta avisar o vencedor do novo Elo (se estiver online)
+                const sWinner = onlineUsers[winner.userId];
+                if (sWinner) io.to(sWinner).emit('elo_update', { newElo: winner.elo, delta: finalWinPoints, rank: getRankName(winner.elo) });
+              }
+            } catch (e) { console.error("Erro WO:", e); }
+          }
+
+          // Limpeza final
+          delete activeMatches[rId];
+          delete reconnectionTimeouts[rId];
+        } else {
+          console.log(`[TIMEOUT] Cancelado. Usuário ${socket.user.name} já voltou.`);
+        }
+      }
+    }, 25000); // 25 segundos
+  }
+});
+});
 async function startMatch(p1, p2, mode) {
   const roomId = uuidv4();
   p1.join(roomId); p1.roomId = roomId;
   p2.join(roomId); p2.roomId = roomId;
 
   // --- [SEGURANÇA] SÓ GERA SEED SE FOR A CORRIDA ---
-  // Verifica se o modo contém 'horse'
+  // Se for xadrez (ranked/friendly), mapSeed fica 0
   let mapSeed = 0;
   if (mode && mode.includes('horse')) {
     mapSeed = Math.floor(Math.random() * 1000000);
@@ -921,36 +962,31 @@ async function startMatch(p1, p2, mode) {
     isFinished: false
   };
 
-  // Payload Base
-  // 🔴 ADICIONADO: type: 'match_start' para o Flutter reconhecer
+  // 🔴 CORREÇÃO CRÍTICA AQUI 🔴
+  // 1. Adicionamos 'type: match_start'
+  // 2. Padronizamos os nomes para o Flutter entender
   const p1Payload = {
     type: 'match_start',
     isPlayer1: true,
     opponent: { name: p2.user.name, elo: elo2, rank: getRankName(elo2) },
-    mode
+    mode: mode, // Repassa o modo exato (ranked, friendly, competitive_archery, etc)
+    mapSeed: (mode && mode.includes('horse')) ? mapSeed : 0
   };
 
   const p2Payload = {
     type: 'match_start',
     isPlayer1: false,
     opponent: { name: p1.user.name, elo: elo1, rank: getRankName(elo1) },
-    mode
+    mode: mode,
+    mapSeed: (mode && mode.includes('horse')) ? mapSeed : 0
   };
 
-  // --- [INJEÇÃO CIRÚRGICA] ---
-  if (mode && mode.includes('horse')) {
-    p1Payload.mapSeed = mapSeed;
-    p2Payload.mapSeed = mapSeed;
-  }
-
-  // 🔴 MUDANÇA IMPORTANTE: Emitindo como 'game_message' 
-  // para cair no listener padrão do OnlineService.instance.onMessage
+  // 🔴 ENVIA COMO 'game_message'
+  // O seu App escuta OnlineService.instance.onMessage, que vem deste canal.
   p1.emit('game_message', p1Payload);
   p2.emit('game_message', p2Payload);
 
-  // (Opcional) Mantém compatibilidade se houver listener antigo
-  p1.emit('match_found', p1Payload);
-  p2.emit('match_found', p2Payload);
+  // (Mantemos o log para você ver no terminal que funcionou)
+  console.log(`[MATCH START] Sala ${roomId} criada. Modo: ${mode}. ${p1.user.name} vs ${p2.user.name}`);
 }
-
 server.listen(process.env.PORT || 8080, () => console.log(`Servidor Ativo`));
