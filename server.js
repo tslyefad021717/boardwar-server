@@ -351,11 +351,14 @@ io.on('connection', (socket) => {
   // 🔴 MATCHMAKING UNIFICADO (COM ASYNC PARA EVITAR O ERRO)
   // =================================================================
   socket.on('find_match', async (incomingData) => { // <--- O "async" AQUI É OBRIGATÓRIO
-    const mode =
+    let mode =
       (typeof incomingData === 'string'
         ? incomingData
         : incomingData?.mode
       )?.toLowerCase();
+
+    if (mode === 'online_ranked' || mode === 'main_ranked') mode = 'ranked';
+    if (mode === 'online_friendly' || mode === 'main_friendly') mode = 'friendly';
 
 
     console.log(`[QUEUE] Jogador ${socket.user.name} entrou na fila: ${mode}`);
