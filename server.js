@@ -785,8 +785,8 @@ async function startMatch(p1, p2, mode) {
   p2.emit('game_message', p2Payload);
 
   // Envia também no canal antigo para garantir
-  p1.emit('match_found', p1Payload);
-  p2.emit('match_found', p2Payload);
+  //p1.emit('match_found', p1Payload);
+  // p2.emit('match_found', p2Payload);
 
   console.log(`[MATCH START] Sala ${roomId} criada. Modo: ${mode}. ${p1.user.name} vs ${p2.user.name}`);
 }
