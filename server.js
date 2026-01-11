@@ -452,6 +452,35 @@ io.on('connection', (socket) => {
       queues[k] = queues[k].filter(s => s.id !== socket.id);
     });
   });
+  // =================================================================
+  // 🚑 VACINA ANTI-ZUMBI (PARTE 2 - O QUE FALTOU)
+  // =================================================================
+  socket.on('leave_game', () => {
+    // 1. Procura se o usuário está preso em alguma partida ativa
+    const rId = Object.keys(activeMatches).find(roomId => {
+      const m = activeMatches[roomId];
+      return (m.p1.id === socket.user.id || m.p2.id === socket.user.id) && !m.isFinished;
+    });
+
+    if (rId) {
+      console.log(`[FORCE EXIT] Jogador ${socket.user.name} forçou saída pelo menu (Sala: ${rId})`);
+
+      // 2. Sai da sala do Socket.io
+      socket.leave(rId);
+
+      // 3. Avisa o oponente (opcional, mas educado)
+      socket.to(rId).emit('game_message', { type: 'opponent_disconnected' });
+
+      // 4. O MAIS IMPORTANTE: Marca a partida como finalizada no servidor
+      // Isso impede que a verificação "ongoingMatchId" te bloqueie na próxima busca
+      if (activeMatches[rId]) {
+        activeMatches[rId].isFinished = true;
+
+        // Se quiser ser radical e apagar da memória na hora:
+        // delete activeMatches[rId]; 
+      }
+    }
+  });
 
   // --- EVENTOS DO JOGO ---
   socket.on('game_move', (msg) => {
