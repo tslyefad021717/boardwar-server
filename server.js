@@ -45,7 +45,7 @@ const User = mongoose.model('User', userSchema);
 let queues = {
   ranked: [],
   friendly: [],
-  archery: [],
+  thief: [], // Substituído archery por thief
   horse_race: [],
   tennis: [],
   king: []
@@ -366,14 +366,17 @@ io.on('connection', (socket) => {
     // ===========================================================
     // A. MINI-GAMES (Lógica nova adicionada)
     // ===========================================================
+    // Dentro de socket.on('find_match', ...)
     if (mode && mode.startsWith('competitive_')) {
       let queueName = '';
-      if (mode === 'competitive_archery' || mode === 'archery_pvp') queueName = 'archery';
+      // Trocamos archery por thief aqui:
+      if (mode === 'competitive_thief' || mode === 'thief_pvp') queueName = 'thief';
       else if (mode === 'competitive_horse' || mode === 'horse_race_pvp') queueName = 'horse_race';
       else if (mode === 'competitive_tennis' || mode === 'tennis_pvp') queueName = 'tennis';
       else if (mode === 'competitive_king' || mode === 'king_pvp') queueName = 'king';
 
       if (!queueName) return;
+      // ... resto da lógica de busca (permanece igual)
 
       queues[queueName] = queues[queueName].filter(s => s.id !== socket.id);
 
@@ -514,17 +517,16 @@ io.on('connection', (socket) => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) socket.to(rId).emit('game_message', { type: 'king_turn_change' });
   });
-
-  socket.on('archery_action', (data) => {
-    const room = socket.roomId;
-    if (room && activeMatches[room]) {
-      socket.to(room).emit('game_message', {
-        type: 'archery_sync',
-        x: data.x,
-        action: data.type,
-        lives: data.lives,
-        hits: data.hits,
-        frozen: data.frozen
+  // ✅ MOVA PARA CÁ (Dentro do io.on('connection')):
+  socket.on('thief_sync', (data) => {
+    const rId = socket.roomId;
+    if (rId && activeMatches[rId]) {
+      socket.to(rId).emit('game_message', {
+        type: 'thief_sync',
+        grid: data.grid,
+        p1Coins: data.p1Coins,
+        p2Coins: data.p2Coins,
+        isPlayer1Turn: data.isPlayer1Turn
       });
     }
   });
@@ -700,8 +702,9 @@ io.on('connection', (socket) => {
     });
 
     // Limpeza da Sala
+    // Limpeza da Sala
     if (cleanupTimeouts[rId]) clearTimeout(cleanupTimeouts[rId]);
-    const isMinigame = ['archery_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp'].includes(match.mode);
+    const isMinigame = ['thief_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp'].includes(match.mode); // Adicione 'thief_pvp' aqui
 
     cleanupTimeouts[rId] = setTimeout(() => {
       if (activeMatches[rId]) {
