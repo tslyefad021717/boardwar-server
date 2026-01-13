@@ -45,10 +45,11 @@ const User = mongoose.model('User', userSchema);
 let queues = {
   ranked: [],
   friendly: [],
-  thief: [], // Substituído archery por thief
+  thief: [],
   horse_race: [],
   tennis: [],
-  king: []
+  king: [],
+  queen: [] // <--- ADICIONE ESTA LINHA
 };
 
 const activeMatches = {};
@@ -374,6 +375,7 @@ io.on('connection', (socket) => {
       else if (mode === 'competitive_horse' || mode === 'horse_race_pvp') queueName = 'horse_race';
       else if (mode === 'competitive_tennis' || mode === 'tennis_pvp') queueName = 'tennis';
       else if (mode === 'competitive_king' || mode === 'king_pvp') queueName = 'king';
+      else if (mode === 'competitive_queen' || mode === 'queen_pvp') queueName = 'queen';
 
       if (!queueName) return;
       // ... resto da lógica de busca (permanece igual)
@@ -505,6 +507,15 @@ io.on('connection', (socket) => {
         isFrozen: data.isFrozen,
         action: data.type
       });
+    }
+  });
+
+  // <--- COLE ISTO JUNTO AOS OUTROS EVENTOS DE JOGO
+  socket.on('queen_sync', (data) => {
+    const rId = socket.roomId;
+    if (rId && activeMatches[rId]) {
+      // Repassa exatamente o que o cliente mandou para a sala
+      socket.to(rId).emit('game_message', data);
     }
   });
 
