@@ -609,40 +609,51 @@ io.on('connection', (socket) => {
   // =================================================================
   // 🤖 NOVO: GAME OVER PARA BOTS (PARA ATUALIZAR RANKING GLOBAL)
   // =================================================================
+  // =================================================================
+  // 🤖 NOVO: GAME OVER PARA BOTS (PARA ATUALIZAR RANKING GLOBAL)
+  // =================================================================
   socket.on('report_bot_game_over', async (data) => {
     try {
-      const { result, reason, myScore, oppScore, opponentId } = data;
+      // 1. Pegamos também o 'mode' que vem do Flutter
+      const { result, reason, myScore, oppScore, opponentId, mode } = data;
       const myUserId = socket.user.id;
 
-      // 1. Busca o Humano e o Bot no banco de dados
       const human = await User.findOne({ userId: myUserId });
       const bot = await User.findOne({ userId: opponentId });
 
       if (human && bot) {
-        // 2. Calcula quanto o humano ganha ou perde
-        const humanDelta = calculateEloDelta(result, reason, myScore, oppScore, human.elo, bot.elo);
+        // 2. 🛡️ TRAVA DE SEGURANÇA: Só mexe no Elo se for Ranqueada
+        if (mode === 'ranked') {
+          const humanDelta = calculateEloDelta(result, reason, myScore, oppScore, human.elo, bot.elo);
 
-        // 3. Calcula o inverso para o Bot (Se o humano ganhou, o bot perdeu)
-        const botResult = (result === 'win' || result === 'victory') ? 'loss' : 'win';
-        const botDelta = calculateEloDelta(botResult, reason, oppScore, myScore, bot.elo, human.elo);
+          const botResult = (result === 'win' || result === 'victory') ? 'loss' : 'win';
+          const botDelta = calculateEloDelta(botResult, reason, oppScore, myScore, bot.elo, human.elo);
 
-        // 4. Aplica as mudanças no banco de dados
-        human.elo = Math.max(0, human.elo + humanDelta);
-        if (result === 'win' || result === 'victory') human.wins++; else human.losses++;
+          human.elo = Math.max(0, human.elo + humanDelta);
+          bot.elo = Math.max(0, bot.elo + botDelta);
 
-        bot.elo = Math.max(0, bot.elo + botDelta);
-        if (botResult === 'win') bot.wins++; else bot.losses++;
+          console.log(`[BOT RANKED] ${human.username} vs ${bot.username}: Elo Atualizado`);
+
+          // Avisa o app para mostrar a animação de pontos subindo
+          socket.emit('elo_update', {
+            newElo: human.elo,
+            delta: humanDelta,
+            rank: getRankName(human.elo)
+          });
+        } else {
+          console.log(`[BOT FRIENDLY] ${human.username} vs ${bot.username}: Elo mantido`);
+        }
+
+        // 3. Estatísticas de perfil (Wins/Losses) sempre contam
+        if (result === 'win' || result === 'victory') {
+          human.wins++;
+          bot.losses++;
+        } else {
+          human.losses++;
+          bot.wins++;
+        }
 
         await Promise.all([human.save(), bot.save()]);
-
-        console.log(`[BOT RANKING] ${human.username} vs ${bot.username}: Humano(${humanDelta}), Bot(${botDelta})`);
-
-        // 5. Avisa o aplicativo para mostrar o novo Elo na tela
-        socket.emit('elo_update', {
-          newElo: human.elo,
-          delta: humanDelta,
-          rank: getRankName(human.elo)
-        });
       }
     } catch (e) {
       console.error("Erro ao atualizar ranking contra bot:", e);
