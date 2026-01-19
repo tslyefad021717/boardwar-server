@@ -832,6 +832,7 @@ io.on('connection', (socket) => {
 });
 
 // 🔴 CORRIGIDO: startMatch COM TUDO O QUE PRECISA
+// 🔴 CORRIGIDO: startMatch COM FLAG DE HUMANO E ID DO OPONENTE
 async function startMatch(p1, p2, mode) {
   const roomId = uuidv4();
   p1.join(roomId); p1.roomId = roomId;
@@ -859,30 +860,37 @@ async function startMatch(p1, p2, mode) {
     isFinished: false
   };
 
-  // Payload Universal (Funciona para Xadrez e Minigames)
+  // Payload Universal (Agora com isBot: false e ID do oponente)
   const p1Payload = {
-    type: 'match_start', // CRUCIAL para o Flutter entender
+    type: 'match_start',
     isPlayer1: true,
-    opponent: { name: p2.user.name, elo: elo2, rank: getRankName(elo2) },
+    opponent: {
+      name: p2.user.name,
+      elo: elo2,
+      rank: getRankName(elo2),
+      id: p2.user.id // <--- ADICIONADO: ID do oponente humano
+    },
     mode: mode,
-    mapSeed: (mode && mode.includes('horse')) ? mapSeed : 0
+    mapSeed: (mode && mode.includes('horse')) ? mapSeed : 0,
+    isBot: false // <--- OBRIGATÓRIO: Garante que o Flutter desligue a IA
   };
 
   const p2Payload = {
     type: 'match_start',
     isPlayer1: false,
-    opponent: { name: p1.user.name, elo: elo1, rank: getRankName(elo1) },
+    opponent: {
+      name: p1.user.name,
+      elo: elo1,
+      rank: getRankName(elo1),
+      id: p1.user.id // <--- ADICIONADO: ID do oponente humano
+    },
     mode: mode,
-    mapSeed: (mode && mode.includes('horse')) ? mapSeed : 0
+    mapSeed: (mode && mode.includes('horse')) ? mapSeed : 0,
+    isBot: false // <--- OBRIGATÓRIO: Garante que o Flutter desligue a IA
   };
 
-  // Envia no canal game_message (que o OnlineService escuta)
   p1.emit('game_message', p1Payload);
   p2.emit('game_message', p2Payload);
-
-  // Envia também no canal antigo para garantir
-  //p1.emit('match_found', p1Payload);
-  // p2.emit('match_found', p2Payload);
 
   console.log(`[MATCH START] Sala ${roomId} criada. Modo: ${mode}. ${p1.user.name} vs ${p2.user.name}`);
 }
