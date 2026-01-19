@@ -606,6 +606,48 @@ io.on('connection', (socket) => {
       delete activeMatches[rId];
     }
   });
+  // =================================================================
+  // 🤖 NOVO: GAME OVER PARA BOTS (PARA ATUALIZAR RANKING GLOBAL)
+  // =================================================================
+  socket.on('report_bot_game_over', async (data) => {
+    try {
+      const { result, reason, myScore, oppScore, opponentId } = data;
+      const myUserId = socket.user.id;
+
+      // 1. Busca o Humano e o Bot no banco de dados
+      const human = await User.findOne({ userId: myUserId });
+      const bot = await User.findOne({ userId: opponentId });
+
+      if (human && bot) {
+        // 2. Calcula quanto o humano ganha ou perde
+        const humanDelta = calculateEloDelta(result, reason, myScore, oppScore, human.elo, bot.elo);
+
+        // 3. Calcula o inverso para o Bot (Se o humano ganhou, o bot perdeu)
+        const botResult = (result === 'win' || result === 'victory') ? 'loss' : 'win';
+        const botDelta = calculateEloDelta(botResult, reason, oppScore, myScore, bot.elo, human.elo);
+
+        // 4. Aplica as mudanças no banco de dados
+        human.elo = Math.max(0, human.elo + humanDelta);
+        if (result === 'win' || result === 'victory') human.wins++; else human.losses++;
+
+        bot.elo = Math.max(0, bot.elo + botDelta);
+        if (botResult === 'win') bot.wins++; else bot.losses++;
+
+        await Promise.all([human.save(), bot.save()]);
+
+        console.log(`[BOT RANKING] ${human.username} vs ${bot.username}: Humano(${humanDelta}), Bot(${botDelta})`);
+
+        // 5. Avisa o aplicativo para mostrar o novo Elo na tela
+        socket.emit('elo_update', {
+          newElo: human.elo,
+          delta: humanDelta,
+          rank: getRankName(human.elo)
+        });
+      }
+    } catch (e) {
+      console.error("Erro ao atualizar ranking contra bot:", e);
+    }
+  });
 
   // --- GAME OVER ---
   // =================================================================
