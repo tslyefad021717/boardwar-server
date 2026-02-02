@@ -759,17 +759,29 @@ io.on('connection', (socket) => {
 
     // Avisa a todos na sala que acabou
     // Define o vencedor REAL
-    const winnerUserId =
-      data.result?.toLowerCase() === 'win'
-        ? socket.user.id
-        : (match.p1.id === socket.user.id ? match.p2.id : match.p1.id);
+    // 🔴 FONTE ÚNICA DA VERDADE: match + cálculo de Elo
+    // Usa o MESMO winner/loser definidos acima no Elo
+
+    let winnerUserId;
+    let loserUserId;
+
+    // Se o socket é o winner calculado no Elo
+    if (socket.user.id === winner.userId) {
+      winnerUserId = winner.userId;
+      loserUserId = loser.userId;
+    } else {
+      winnerUserId = winner.userId;
+      loserUserId = loser.userId;
+    }
 
     io.to(rId).emit('game_message', {
       type: 'game_over',
       reason: data.reason,
       winnerId: winnerUserId,
-      result: data.result // legado / compatibilidade
+      loserId: loserUserId, // 🔴 novo (opcional, mas correto)
+      result: data.result // legado / compatibilidade total
     });
+
 
 
 
