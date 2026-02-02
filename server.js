@@ -762,25 +762,25 @@ io.on('connection', (socket) => {
     // 🔴 FONTE ÚNICA DA VERDADE: match + cálculo de Elo
     // Usa o MESMO winner/loser definidos acima no Elo
 
-    let winnerUserId;
-    let loserUserId;
+    // ✅ DEFINIÇÃO SEGURA DO VENCEDOR (APENAS PARA UI)
+    const reporterId = socket.user.id;
+    const opponentId =
+      match.p1.id === reporterId ? match.p2.id : match.p1.id;
 
-    // Se o socket é o winner calculado no Elo
-    if (socket.user.id === winner.userId) {
-      winnerUserId = winner.userId;
-      loserUserId = loser.userId;
-    } else {
-      winnerUserId = winner.userId;
-      loserUserId = loser.userId;
-    }
+    const normalizedResult = (data.result || '').toLowerCase();
+
+    const winnerUserId =
+      ['win', 'victory', 'win_by_wo'].includes(normalizedResult)
+        ? reporterId
+        : opponentId;
 
     io.to(rId).emit('game_message', {
       type: 'game_over',
       reason: data.reason,
       winnerId: winnerUserId,
-      loserId: loserUserId, // 🔴 novo (opcional, mas correto)
-      result: data.result // legado / compatibilidade total
+      result: data.result // compatibilidade total
     });
+
 
 
 
