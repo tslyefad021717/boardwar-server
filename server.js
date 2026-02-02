@@ -758,12 +758,18 @@ io.on('connection', (socket) => {
     match.isFinished = true;
 
     // Avisa a todos na sala que acabou
+    // Define o vencedor REAL
+    const winnerUserId =
+      data.result?.toLowerCase() === 'win'
+        ? socket.user.id
+        : (match.p1.id === socket.user.id ? match.p2.id : match.p1.id);
+
     io.to(rId).emit('game_message', {
       type: 'game_over',
       reason: data.reason,
-      result: data.result,
-      winnerId: socket.user.id
+      winnerId: winnerUserId
     });
+
 
     // Limpeza da Sala
     // Limpeza da Sala
