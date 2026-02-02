@@ -767,11 +767,12 @@ io.on('connection', (socket) => {
     io.to(rId).emit('game_message', {
       type: 'game_over',
       reason: data.reason,
-      winnerId: winnerUserId
+      winnerId: winnerUserId,
+      result: data.result // legado / compatibilidade
     });
 
 
-    // Limpeza da Sala
+
     // Limpeza da Sala
     if (cleanupTimeouts[rId]) clearTimeout(cleanupTimeouts[rId]);
     const isMinigame = ['thief_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp'].includes(match.mode); // Adicione 'thief_pvp' aqui
