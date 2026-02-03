@@ -664,6 +664,9 @@ io.on('connection', (socket) => {
   // =================================================================
   // 6. GAME OVER BLINDADO (CORREÇÃO DEFINITIVA DE DUPLICIDADE)
   // =================================================================
+  // =================================================================
+  // 6. GAME OVER BLINDADO (CÓDIGO COMPLETO - NADA RESUMIDO)
+  // =================================================================
   socket.on('game_over_report', async (data) => {
     const rId = socket.roomId;
     if (!rId || !activeMatches[rId]) return;
@@ -673,7 +676,7 @@ io.on('connection', (socket) => {
     // 🔴 TRAVA 1: Se já acabou, ignora.
     if (match.isFinished) return;
 
-    // 🔴 TRAVA 2: Semáforo de processamento (Evita que P1 e P2 entrem aqui ao mesmo tempo)
+    // 🔴 TRAVA 2: Semáforo de processamento
     if (match.processingGameOver) return;
     match.processingGameOver = true;
 
@@ -685,8 +688,11 @@ io.on('connection', (socket) => {
 
     console.log(`[GAME OVER] Sala ${rId} - Result: ${data.result}, Reason: ${data.reason}`);
 
+    // =================================================================
+    // PARTE 1: CÁLCULO DE ELO (MANTIDO DO SEU ORIGINAL)
+    // =================================================================
     try {
-      // Só calcula Elo se for Rankeada E se ainda não tivermos calculado (redundância)
+      // Só calcula Elo se for Rankeada E se ainda não tivermos calculado
       if (match.mode === 'ranked' && !match.eloCalculated) {
         match.eloCalculated = true; // Marca que já calculou
 
@@ -736,58 +742,61 @@ io.on('connection', (socket) => {
 
           await Promise.all([winner.save(), loser.save()]);
 
-          // Envia atualização de Elo para os clientes (com delay visual)
+          // CORREÇÃO DOS SOCKETS (AQUELE QUE ARRUMAMOS ANTES)
           setTimeout(() => {
             const s1 = onlineUsers[winner.userId];
             const s2 = onlineUsers[loser.userId];
-            // Envia apenas se o socket ainda estiver conectado
-            if (s1 && io.sockets.sockets.get(s1))
+
+            // Envia se o ID estiver no mapa (sem checagem restrita de socket object)
+            if (s1) {
               io.to(s1).emit('elo_update', { newElo: winner.elo, delta: finalWinPoints, rank: getRankName(winner.elo) });
-            if (s2 && io.sockets.sockets.get(s2))
+            }
+            if (s2) {
               io.to(s2).emit('elo_update', { newElo: loser.elo, delta: realLossDelta, rank: getRankName(loser.elo) });
+            }
           }, 1500);
         }
       }
     } catch (e) {
       console.error("Erro Crítico no Elo:", e);
-      // Se der erro, destrava para tentar processar de novo (opcional, mas perigoso)
-      // match.processingGameOver = false; 
     }
 
-    // Marca como finalizado OFICIALMENTE após processar o Elo
-    match.isFinished = true;
+    // =================================================================
+    // PARTE 2: DEFINIÇÃO DE VENCEDOR E ENVIO (AQUI ESTAVA O ERRO DE LÓGICA)
+    // =================================================================
 
-    // Avisa a todos na sala que acabou
-    // Define o vencedor REAL
-    // 🔴 FONTE ÚNICA DA VERDADE: match + cálculo de Elo
-    // Usa o MESMO winner/loser definidos acima no Elo
-
-    // ✅ DEFINIÇÃO SEGURA DO VENCEDOR (APENAS PARA UI)
+    // 1. Descobrimos quem reportou e quem é o oponente
     const reporterId = socket.user.id;
-    const opponentId =
-      match.p1.id === reporterId ? match.p2.id : match.p1.id;
+    const opponentId = (match.p1.id === reporterId) ? match.p2.id : match.p1.id;
 
-    const normalizedResult = (data.result || '').toLowerCase();
+    // 2. Normalizamos o resultado
+    const resultNormalized = (data.result || '').toLowerCase();
 
-    const winnerUserId =
-      ['win', 'victory', 'win_by_wo'].includes(normalizedResult)
-        ? reporterId
-        : opponentId;
+    // 3. Verificamos se quem reportou está dizendo que ganhou
+    const isReporterWinner = ['win', 'victory', 'win_by_wo'].includes(resultNormalized);
 
+    // 4. Definimos os IDs finais (Funciona para Rankeada E Minigames)
+    // Isso evita o erro de "winner is undefined" nos minigames
+    const finalWinnerId = isReporterWinner ? reporterId : opponentId;
+    const finalLoserId = isReporterWinner ? opponentId : reporterId;
+
+    // 5. Enviamos a mensagem
     io.to(rId).emit('game_message', {
       type: 'game_over',
       reason: data.reason,
-      winnerId: winnerUserId,
-      result: data.result // compatibilidade total
+      winnerId: finalWinnerId,
+      loserId: finalLoserId,
+      result: data.result
     });
 
-
-
-
+    // Marca como finalizado OFICIALMENTE após processar tudo
+    match.isFinished = true;
 
     // Limpeza da Sala
     if (cleanupTimeouts[rId]) clearTimeout(cleanupTimeouts[rId]);
-    const isMinigame = ['thief_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp'].includes(match.mode); // Adicione 'thief_pvp' aqui
+
+    // Adicionei os outros minigames na lista para garantir limpeza rápida
+    const isMinigame = ['thief_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp', 'queen_pvp'].includes(match.mode);
 
     cleanupTimeouts[rId] = setTimeout(() => {
       if (activeMatches[rId]) {
