@@ -664,6 +664,9 @@ io.on('connection', (socket) => {
   // =================================================================
   // 6. GAME OVER BLINDADO (CORREÇÃO DEFINITIVA DE DUPLICIDADE)
   // =================================================================
+  // =================================================================
+  // 6. GAME OVER BLINDADO (SUBSTITUA O SEU BLOCO 'game_over_report' POR ESTE)
+  // =================================================================
   socket.on('game_over_report', async (data) => {
     const rId = socket.roomId;
     if (!rId || !activeMatches[rId]) return;
@@ -673,7 +676,7 @@ io.on('connection', (socket) => {
     // 🔴 TRAVA 1: Se já acabou, ignora.
     if (match.isFinished) return;
 
-    // 🔴 TRAVA 2: Semáforo de processamento (Evita que P1 e P2 entrem aqui ao mesmo tempo)
+    // 🔴 TRAVA 2: Semáforo de processamento
     if (match.processingGameOver) return;
     match.processingGameOver = true;
 
@@ -686,25 +689,21 @@ io.on('connection', (socket) => {
     console.log(`[GAME OVER] Sala ${rId} - Result: ${data.result}, Reason: ${data.reason}`);
 
     try {
-      // Só calcula Elo se for Rankeada E se ainda não tivermos calculado (redundância)
+      // --- CÁLCULO DE ELO (SÓ PARA RANQUEADA) ---
       if (match.mode === 'ranked' && !match.eloCalculated) {
-        match.eloCalculated = true; // Marca que já calculou
+        match.eloCalculated = true;
 
         const p1Data = match.p1;
         const p2Data = match.p2;
 
-        // Busca usuários frescos do banco
         const user1 = await User.findOne({ userId: p1Data.id });
         const user2 = await User.findOne({ userId: p2Data.id });
 
         if (user1 && user2) {
-          // Define quem reportou (para confiar nos dados certos)
           const isReporterP1 = (socket.user.id === p1Data.id);
-
           let winner, loser;
           let winnerScore = 0, loserScore = 0;
 
-          // Lógica de quem ganhou baseada no report recebido
           if (['win', 'victory'].includes(data.result?.toLowerCase())) {
             winner = isReporterP1 ? user1 : user2;
             loser = isReporterP1 ? user2 : user1;
@@ -717,18 +716,15 @@ io.on('connection', (socket) => {
             loserScore = isReporterP1 ? (data.myScore || 0) : (data.oppScore || 0);
           }
 
-          // Salva Elos antigos para o cálculo
           const winnerEloBefore = winner.elo;
           const loserEloBefore = loser.elo;
 
-          // Calcula Deltas
           const realWinDelta = calculateEloDelta('win', data.reason, winnerScore, loserScore, winnerEloBefore, loserEloBefore);
           const finalWinPoints = Math.abs(realWinDelta) > 0 ? Math.abs(realWinDelta) : 10;
           const realLossDelta = calculateEloDelta('loss', data.reason, loserScore, winnerScore, loserEloBefore, winnerEloBefore);
 
           console.log(`[ELO CALC] Winner (${winner.username}): +${finalWinPoints} | Loser (${loser.username}): ${realLossDelta}`);
 
-          // Aplica no Banco
           winner.elo += finalWinPoints;
           winner.wins++;
           loser.elo = Math.max(0, loser.elo + realLossDelta);
@@ -736,39 +732,51 @@ io.on('connection', (socket) => {
 
           await Promise.all([winner.save(), loser.save()]);
 
-          // Envia atualização de Elo para os clientes (com delay visual)
+          // Envia Elo com segurança
           setTimeout(() => {
             const s1 = onlineUsers[winner.userId];
             const s2 = onlineUsers[loser.userId];
-            // Envia apenas se o socket ainda estiver conectado
-            if (s1 && io.sockets.sockets.get(s1))
-              io.to(s1).emit('elo_update', { newElo: winner.elo, delta: finalWinPoints, rank: getRankName(winner.elo) });
-            if (s2 && io.sockets.sockets.get(s2))
-              io.to(s2).emit('elo_update', { newElo: loser.elo, delta: realLossDelta, rank: getRankName(loser.elo) });
+            if (s1) io.to(s1).emit('elo_update', { newElo: winner.elo, delta: finalWinPoints, rank: getRankName(winner.elo) });
+            if (s2) io.to(s2).emit('elo_update', { newElo: loser.elo, delta: realLossDelta, rank: getRankName(loser.elo) });
           }, 1500);
         }
       }
     } catch (e) {
       console.error("Erro Crítico no Elo:", e);
-      // Se der erro, destrava para tentar processar de novo (opcional, mas perigoso)
-      // match.processingGameOver = false; 
     }
 
-    // Marca como finalizado OFICIALMENTE após processar o Elo
-    match.isFinished = true;
+    // =================================================================
+    // 🟢 A CORREÇÃO VITAL PARA OS MINIGAMES E ERRO DE "VENCEDOR ERRADO"
+    // =================================================================
 
-    // Avisa a todos na sala que acabou
+    // 1. Quem reportou?
+    const reporterId = socket.user.id;
+    const opponentId = (match.p1.id === reporterId) ? match.p2.id : match.p1.id;
+
+    // 2. O que ele disse?
+    const resultNormalized = (data.result || '').toLowerCase();
+
+    // 3. Ele venceu?
+    const isReporterWinner = ['win', 'victory', 'win_by_wo'].includes(resultNormalized);
+
+    // 4. Define os IDs finais com certeza absoluta
+    const finalWinnerId = isReporterWinner ? reporterId : opponentId;
+    const finalLoserId = isReporterWinner ? opponentId : reporterId;
+
+    // 5. Envia para a sala (Agora sim o Flutter vai entender quem ganhou)
     io.to(rId).emit('game_message', {
       type: 'game_over',
       reason: data.reason,
-      result: data.result,
-      winnerId: socket.user.id
+      winnerId: finalWinnerId, // ✅ ID Correto calculado
+      loserId: finalLoserId,
+      result: data.result
     });
 
-    // Limpeza da Sala
+    match.isFinished = true;
+
     // Limpeza da Sala
     if (cleanupTimeouts[rId]) clearTimeout(cleanupTimeouts[rId]);
-    const isMinigame = ['thief_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp'].includes(match.mode); // Adicione 'thief_pvp' aqui
+    const isMinigame = ['thief_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp', 'queen_pvp'].includes(match.mode);
 
     cleanupTimeouts[rId] = setTimeout(() => {
       if (activeMatches[rId]) {
