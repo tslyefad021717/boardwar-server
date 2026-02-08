@@ -204,26 +204,23 @@ io.on('connection', (socket) => {
   // --- REGISTRO ---
   socket.on('register_user', async (data) => {
     try {
-      let { userId, username } = data; // Usei 'let' para aplicar o trim()
+      let { userId, username } = data;
 
-      // 1. Remove espaços sobrando no início e fim (segurança)
+      // 1. Remove espaços sobrando
       username = username ? username.trim() : "";
 
-      // ⬇️ AQUI ESTÁ A NOVA REGRA (CORRIGIDA) ⬇️
-      // ^                 : Início
-      // [                 : Início do grupo de caracteres permitidos
-      //   a-zA-Z0-9       : Letras e Números padrões
-      //   \u00C0-\u00FF   : Acentos e Cedilha (Á, é, ñ, ü, ç...)
-      //    _\-\.@         : Espaço, Underline, Traço, Ponto e Arroba
-      // ]                 : Fim do grupo
-      // {3,15}            : Tamanho mínimo 3, máximo 15
-      // $                 : Fim
-      const nameRegex = /^[a-zA-Z0-9\u00C0-\u00FF _\-\.@]{3,15}$/;
+      // ⬇️ AQUI ESTÁ A REGRA GLOBAL (UNIVERSAL) ⬇️
+      // \p{L}   : Qualquer letra de qualquer idioma (Russo, Chinês, Árabe, etc)
+      // \p{N}   : Qualquer número
+      // _\-\.@  : Seus símbolos permitidos (Espaço, Underline, Traço, Ponto, Arroba)
+      // {3,15}  : Tamanho (Cuidado: 15 caracteres chineses ocupam mais espaço visual que 15 latinos)
+      // u       : Flag obrigatória no final para ativar o modo Unicode
+      const nameRegex = /^[\p{L}\p{N} _\-\.@]{3,15}$/u;
 
       if (!username || !nameRegex.test(username)) {
         return socket.emit('register_response', {
           success: false,
-          message: "Nome inválido! Use 3-15 letras, números, espaços ou acentos."
+          message: "Nome inválido! Use 3-15 caracteres (Letras globais, números ou . - _ @)."
         });
       }
 
@@ -249,8 +246,8 @@ io.on('connection', (socket) => {
         success: true, username: user.username, elo: user.elo, rank: getRankName(user.elo)
       });
     } catch (e) {
-      console.error(e); // É bom logar o erro no servidor para debug
-      socket.emit('register_response', { success: false, message: "Erro no servidor." });
+      console.error(e);
+      socket.emit('register_response', { success: false, message: "Erro no servidor ou nome já em uso." });
     }
   });
 
