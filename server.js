@@ -201,13 +201,33 @@ io.on('connection', (socket) => {
   }
 
   // --- REGISTRO ---
+  // --- REGISTRO ---
   socket.on('register_user', async (data) => {
     try {
-      const { userId, username } = data;
-      const nameRegex = /^[a-zA-Z0-9_]{3,15}$/;
+      let { userId, username } = data; // Usei 'let' para aplicar o trim()
+
+      // 1. Remove espaços sobrando no início e fim (segurança)
+      username = username ? username.trim() : "";
+
+      // ⬇️ AQUI ESTÁ A NOVA REGRA (CORRIGIDA) ⬇️
+      // ^                 : Início
+      // [                 : Início do grupo de caracteres permitidos
+      //   a-zA-Z0-9       : Letras e Números padrões
+      //   \u00C0-\u00FF   : Acentos e Cedilha (Á, é, ñ, ü, ç...)
+      //    _\-\.@         : Espaço, Underline, Traço, Ponto e Arroba
+      // ]                 : Fim do grupo
+      // {3,15}            : Tamanho mínimo 3, máximo 15
+      // $                 : Fim
+      const nameRegex = /^[a-zA-Z0-9\u00C0-\u00FF _\-\.@]{3,15}$/;
+
       if (!username || !nameRegex.test(username)) {
-        return socket.emit('register_response', { success: false, message: "Nome inválido!" });
+        return socket.emit('register_response', {
+          success: false,
+          message: "Nome inválido! Use 3-15 letras, números, espaços ou acentos."
+        });
       }
+
+      // O resto continua igual...
       let user = await User.findOneAndUpdate(
         { userId }, { username },
         { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -229,6 +249,7 @@ io.on('connection', (socket) => {
         success: true, username: user.username, elo: user.elo, rank: getRankName(user.elo)
       });
     } catch (e) {
+      console.error(e); // É bom logar o erro no servidor para debug
       socket.emit('register_response', { success: false, message: "Erro no servidor." });
     }
   });
