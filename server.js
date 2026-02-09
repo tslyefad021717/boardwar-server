@@ -255,18 +255,18 @@ io.on('connection', (socket) => {
   socket.on('add_friend', async (targetName) => {
     try {
       const target = await User.findOne({ username: targetName });
-      if (!target) return socket.emit('friend_error', 'Guerreiro não encontrado.');
-      if (target.userId === socket.user.id) return socket.emit('friend_error', 'Erro: Auto-adicionar.');
+      if (!target) return socket.emit('friend_error', 'friends.error_not_found');
+      if (target.userId === socket.user.id) return socket.emit('friend_error', 'friends.error_self');
 
       const me = await User.findOne({ userId: socket.user.id });
       if (!me) return;
 
-      if (me.friends.length >= 20) return socket.emit('friend_error', 'Limite de amigos atingido!');
-      if (me.friends.includes(target.userId)) return socket.emit('friend_error', 'Já é seu amigo.');
+      if (me.friends.length >= 20) return socket.emit('friend_error', 'friends.error_limit');
+      if (me.friends.includes(target.userId)) return socket.emit('friend_error', 'friends.error_already');
 
       me.friends.push(target.userId);
       await me.save();
-      socket.emit('friend_success', `Seguindo ${target.username}!`);
+      socket.emit('friend_success', { key: 'friends.follow_success', args: { name: target.username } });
 
       const targetSocketId = onlineUsers[target.userId];
       const notificationData = { name: socket.user.name };
@@ -312,7 +312,7 @@ io.on('connection', (socket) => {
         inviterName: socket.user.name
       });
     } else {
-      socket.emit('friend_error', 'Amigo offline.');
+      socket.emit('friend_error', 'friends.error_offline');
     }
   });
 
@@ -326,7 +326,7 @@ io.on('connection', (socket) => {
         queues.friendly = queues.friendly.filter(s => s.id !== socket.id && s.id !== inviterSocket.id);
         startMatch(inviterSocket, socket, 'friendly');
       } else {
-        socket.emit('friend_error', 'Convite expirou.');
+        socket.emit('friend_error', 'friends.error_invite_expired');
       }
     }
   });
@@ -432,7 +432,7 @@ io.on('connection', (socket) => {
     });
 
     if (ongoingMatchId) {
-      socket.emit('match_error', 'Você já está em uma batalha!');
+      socket.emit('match_error', 'online.already_playing');
       return;
     }
 
@@ -467,7 +467,7 @@ io.on('connection', (socket) => {
       findMatchDynamic();
     }
 
-    socket.emit('status', "Buscando oponente digno...");
+    socket.emit('status', 'online.searching_title');
   });
 
   socket.on('leave_queue', () => {
