@@ -447,6 +447,7 @@ io.on('connection', (socket) => {
         startMatch(opponent, socket, 'friendly');
       } else {
         queues.friendly.push(socket);
+        socket.emit('status', 'online.searching_status');
       }
     } else {
       // --- RANKED GLOBAL ---
