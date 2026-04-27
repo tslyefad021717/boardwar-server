@@ -29,6 +29,8 @@ const userSchema = new mongoose.Schema({
   elo: { type: Number, default: 600 },
   wins: { type: Number, default: 0 },
   losses: { type: Number, default: 0 },
+  silverCoins: { type: Number, default: 0 },
+  goldCoins: { type: Number, default: 0 },
   friends: [{ type: String }],
   notifications: [{
     type: { type: String },
@@ -211,15 +213,8 @@ io.on('connection', (socket) => {
     try {
       let { userId, username } = data;
 
-      // 1. Remove espaços sobrando
       username = username ? username.trim() : "";
 
-      // ⬇️ AQUI ESTÁ A REGRA GLOBAL (UNIVERSAL) ⬇️
-      // \p{L}   : Qualquer letra de qualquer idioma (Russo, Chinês, Árabe, etc)
-      // \p{N}   : Qualquer número
-      // _\-\.@  : Seus símbolos permitidos (Espaço, Underline, Traço, Ponto, Arroba)
-      // {3,15}  : Tamanho (Cuidado: 15 caracteres chineses ocupam mais espaço visual que 15 latinos)
-      // u       : Flag obrigatória no final para ativar o modo Unicode
       const nameRegex = /^[\p{L}\p{N} _\-\.@]{3,15}$/u;
 
       if (!username || !nameRegex.test(username)) {
@@ -229,7 +224,6 @@ io.on('connection', (socket) => {
         });
       }
 
-      // O resto continua igual...
       let user = await User.findOneAndUpdate(
         { userId }, { username },
         { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -248,7 +242,12 @@ io.on('connection', (socket) => {
       socket.user.elo = user.elo;
 
       socket.emit('register_response', {
-        success: true, username: user.username, elo: user.elo, rank: getRankName(user.elo)
+        success: true,
+        username: user.username,
+        elo: user.elo,
+        rank: getRankName(user.elo),
+        silverCoins: user.silverCoins,
+        goldCoins: user.goldCoins
       });
     } catch (e) {
       console.error(e);

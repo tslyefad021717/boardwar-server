@@ -117,9 +117,14 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
 // ===========================================================================
 // 4. MATCHMAKING DINÂMICO (Para Ranqueada de Xadrez)
 // ===========================================================================
+// ===========================================================================
+// 4. MATCHMAKING DINÂMICO (SEM FILTRO DE ELO - MATCH INSTANTÂNEO)
+// ===========================================================================
 function findMatchDynamic() {
   const mode = 'ranked';
   const queue = queues[mode];
+
+  // Se não tem pelo menos 2 pessoas na fila, não faz nada
   if (queue.length < 2) return;
 
   for (let i = 0; i < queue.length; i++) {
@@ -127,26 +132,26 @@ function findMatchDynamic() {
       const p1 = queue[i];
       const p2 = queue[j];
 
+      // Proteção básica: Evita parear o jogador com ele mesmo (se ele bugar a fila)
       if (p1.user.id === p2.user.id) continue;
 
-      const waitTime = (Date.now() - Math.min(p1.joinedAt, p2.joinedAt)) / 1000;
-      let marginPercent = 10 + (Math.floor(waitTime / 30) * 5);
-      if (marginPercent > 30) marginPercent = 30;
+      // Achou dois jogadores diferentes? É MATCH IMEDIATO! Não importa o Elo ou o tempo.
 
-      const eloDiff = Math.abs(p1.user.elo - p2.user.elo);
-      const avgElo = (p1.user.elo + p2.user.elo) / 2;
-      const maxAllowedDiff = avgElo * (marginPercent / 100);
+      // Remove da fila (Sempre remova o de índice MAIOR primeiro para não quebrar o array)
+      queues[mode].splice(j, 1);
+      queues[mode].splice(i, 1);
 
-      if (eloDiff <= maxAllowedDiff) {
-        queues[mode].splice(j, 1);
-        queues[mode].splice(i, 1);
-        startMatch(p1, p2, mode);
-        return findMatchDynamic();
-      }
+      startMatch(p1, p2, mode);
+
+      // Chama a função de novo para parear o resto da fila, se houver mais de 2 pessoas
+      return findMatchDynamic();
     }
   }
 }
-setInterval(findMatchDynamic, 5000);
+
+// Roda a cada 2 segundos (bem rápido) para garantir que o servidor crie a sala 
+
+setInterval(findMatchDynamic, 2000);
 
 // ===========================================================================
 // 5. SOCKET.IO EVENTS
