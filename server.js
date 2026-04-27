@@ -36,6 +36,13 @@ const userSchema = new mongoose.Schema({
     type: { type: String },
     data: { type: Object }
   }],
+  dailyTasks: {
+    date: { type: String, default: "" },
+    gamesPlayed: { type: Number, default: 0 },
+    gamesClaimed: { type: Boolean, default: false },
+    trainingDone: { type: Boolean, default: false },
+    trainingClaimed: { type: Boolean, default: false }
+  },
   createdAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', userSchema);
@@ -115,7 +122,22 @@ function calculateEloDelta(result, reason, myScore, oppScore, myElo, oppElo) {
     return delta > 0 ? 0 : delta;
   }
 }
+function getTodayString() {
+  const d = new Date();
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
 
+async function incrementDailyGame(userId) {
+  try {
+    const user = await User.findOne({ userId });
+    if (user && user.dailyTasks.date === getTodayString()) {
+      user.dailyTasks.gamesPlayed++;
+      await user.save();
+    }
+  } catch (e) {
+    console.error("Erro ao incrementar partida diária:", e);
+  }
+}
 // ===========================================================================
 // 4. MATCHMAKING DINÂMICO (Para Ranqueada de Xadrez)
 // ===========================================================================
@@ -254,7 +276,67 @@ io.on('connection', (socket) => {
       socket.emit('register_response', { success: false, message: "Erro no servidor ou nome já em uso." });
     }
   });
+  // ===========================================================================
+  // SISTEMA DE TAREFAS DIÁRIAS E RECOMPENSAS
+  // ===========================================================================
+  socket.on('get_tasks', async () => {
+    try {
+      const user = await User.findOne({ userId: socket.user.id });
+      if (!user) return;
 
+      const today = getTodayString();
+
+      // Se a data for diferente de hoje, reseta as tarefas
+      if (user.dailyTasks.date !== today) {
+        user.dailyTasks = {
+          date: today,
+          gamesPlayed: 0,
+          gamesClaimed: false,
+          trainingDone: false,
+          trainingClaimed: false
+        };
+        await user.save();
+      }
+
+      socket.emit('tasks_data', user.dailyTasks);
+    } catch (e) {
+      console.error("Erro ao buscar tarefas:", e);
+    }
+  });
+
+  socket.on('claim_task', async (taskType) => {
+    try {
+      const user = await User.findOne({ userId: socket.user.id });
+      if (!user) return;
+
+      let reward = 0;
+
+      // Valida qual tarefa está sendo cobrada e se os requisitos foram cumpridos
+      if (taskType === 'games' && user.dailyTasks.gamesPlayed >= 3 && !user.dailyTasks.gamesClaimed) {
+        user.dailyTasks.gamesClaimed = true;
+        reward = 50; // 50 moedas de prata
+      } else if (taskType === 'training' && user.dailyTasks.trainingDone && !user.dailyTasks.trainingClaimed) {
+        user.dailyTasks.trainingClaimed = true;
+        reward = 25; // 25 moedas de prata
+      }
+
+      if (reward > 0) {
+        user.silverCoins += reward;
+        await user.save();
+
+        socket.emit('task_claimed_success', {
+          taskType: taskType,
+          reward: reward,
+          newSilver: user.silverCoins,
+          dailyTasks: user.dailyTasks
+        });
+      } else {
+        socket.emit('task_error', "Não foi possível coletar a recompensa.");
+      }
+    } catch (e) {
+      console.error("Erro ao coletar tarefa:", e);
+    }
+  });
   // --- AMIGOS ---
   socket.on('add_friend', async (targetName) => {
     try {
@@ -635,9 +717,27 @@ io.on('connection', (socket) => {
   // =================================================================
   // 🤖 NOVO: GAME OVER PARA BOTS (PARA ATUALIZAR RANKING GLOBAL)
   // =================================================================
+  // =================================================================
+  // EVENTO DE TREINO (MISSÃO 2)
+  // =================================================================
+  socket.on('report_training', async () => {
+    try {
+      const user = await User.findOne({ userId: socket.user.id });
+      if (user && user.dailyTasks.date === getTodayString() && !user.dailyTasks.trainingDone) {
+        user.dailyTasks.trainingDone = true;
+        await user.save();
+        console.log(`[TASKS] ${user.username} completou a missão de treino!`);
+      }
+    } catch (e) {
+      console.error("Erro ao reportar treino:", e);
+    }
+  });
+
+  // =================================================================
+  // 🤖 GAME OVER PARA BOTS
+  // =================================================================
   socket.on('report_bot_game_over', async (data) => {
     try {
-      // 1. Pegamos também o 'mode' que vem do Flutter
       const { result, reason, myScore, oppScore, opponentId, mode } = data;
       const myUserId = socket.user.id;
 
@@ -645,7 +745,6 @@ io.on('connection', (socket) => {
       const bot = await User.findOne({ userId: opponentId });
 
       if (human && bot) {
-        // 2. 🛡️ TRAVA DE SEGURANÇA: Só mexe no Elo se for Ranqueada
         if (mode === 'ranked') {
           const humanDelta = calculateEloDelta(result, reason, myScore, oppScore, human.elo, bot.elo);
 
@@ -657,7 +756,6 @@ io.on('connection', (socket) => {
 
           console.log(`[BOT RANKED] ${human.username} vs ${bot.username}: Elo Atualizado`);
 
-          // Avisa o app para mostrar a animação de pontos subindo
           socket.emit('elo_update', {
             newElo: human.elo,
             delta: humanDelta,
@@ -667,7 +765,6 @@ io.on('connection', (socket) => {
           console.log(`[BOT FRIENDLY] ${human.username} vs ${bot.username}: Elo mantido`);
         }
 
-        // 3. Estatísticas de perfil (Wins/Losses) sempre contam
         if (result === 'win' || result === 'victory') {
           human.wins++;
           bot.losses++;
@@ -677,18 +774,17 @@ io.on('connection', (socket) => {
         }
 
         await Promise.all([human.save(), bot.save()]);
+
+        // INCREMENTA A MISSÃO DIÁRIA AQUI
+        await incrementDailyGame(myUserId);
       }
     } catch (e) {
       console.error("Erro ao atualizar ranking contra bot:", e);
     }
   });
 
-  // --- GAME OVER ---
   // =================================================================
-  // 6. GAME OVER BLINDADO (CORREÇÃO DEFINITIVA DE DUPLICIDADE)
-  // =================================================================
-  // =================================================================
-  // 6. GAME OVER BLINDADO (SUBSTITUA O SEU BLOCO 'game_over_report' POR ESTE)
+  // 6. GAME OVER BLINDADO (HUMANO VS HUMANO)
   // =================================================================
   socket.on('game_over_report', async (data) => {
     const rId = socket.roomId;
@@ -696,14 +792,11 @@ io.on('connection', (socket) => {
 
     const match = activeMatches[rId];
 
-    // 🔴 TRAVA 1: Se já acabou, ignora.
     if (match.isFinished) return;
 
-    // 🔴 TRAVA 2: Semáforo de processamento
     if (match.processingGameOver) return;
     match.processingGameOver = true;
 
-    // Cancela timers de desconexão para não dar WO falso
     if (reconnectionTimeouts[rId]) {
       clearTimeout(reconnectionTimeouts[rId]);
       delete reconnectionTimeouts[rId];
@@ -712,7 +805,6 @@ io.on('connection', (socket) => {
     console.log(`[GAME OVER] Sala ${rId} - Result: ${data.result}, Reason: ${data.reason}`);
 
     try {
-      // --- CÁLCULO DE ELO (SÓ PARA RANQUEADA) ---
       if (match.mode === 'ranked' && !match.eloCalculated) {
         match.eloCalculated = true;
 
@@ -755,7 +847,10 @@ io.on('connection', (socket) => {
 
           await Promise.all([winner.save(), loser.save()]);
 
-          // Envia Elo com segurança
+          // INCREMENTA A MISSÃO DIÁRIA DOS DOIS JOGADORES AQUI
+          await incrementDailyGame(p1Data.id);
+          await incrementDailyGame(p2Data.id);
+
           setTimeout(() => {
             const s1 = onlineUsers[winner.userId];
             const s2 = onlineUsers[loser.userId];
@@ -768,36 +863,26 @@ io.on('connection', (socket) => {
       console.error("Erro Crítico no Elo:", e);
     }
 
-    // =================================================================
-    // 🟢 A CORREÇÃO VITAL PARA OS MINIGAMES E ERRO DE "VENCEDOR ERRADO"
-    // =================================================================
-
-    // 1. Quem reportou?
     const reporterId = socket.user.id;
     const opponentId = (match.p1.id === reporterId) ? match.p2.id : match.p1.id;
 
-    // 2. O que ele disse?
     const resultNormalized = (data.result || '').toLowerCase();
 
-    // 3. Ele venceu?
     const isReporterWinner = ['win', 'victory', 'win_by_wo'].includes(resultNormalized);
 
-    // 4. Define os IDs finais com certeza absoluta
     const finalWinnerId = isReporterWinner ? reporterId : opponentId;
     const finalLoserId = isReporterWinner ? opponentId : reporterId;
 
-    // 5. Envia para a sala (Agora sim o Flutter vai entender quem ganhou)
     io.to(rId).emit('game_message', {
       type: 'game_over',
       reason: data.reason,
-      winnerId: finalWinnerId, // ✅ ID Correto calculado
+      winnerId: finalWinnerId,
       loserId: finalLoserId,
       result: data.result
     });
 
     match.isFinished = true;
 
-    // Limpeza da Sala
     if (cleanupTimeouts[rId]) clearTimeout(cleanupTimeouts[rId]);
     const isMinigame = ['thief_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp', 'queen_pvp'].includes(match.mode);
 
