@@ -51,15 +51,18 @@ const User = mongoose.model('User', userSchema);
 // ===========================================================================
 // CATÁLOGO DA LOJA (PREÇOS E ITENS)
 // ===========================================================================
+// ===========================================================================
+// CATÁLOGO DA LOJA (PREÇOS E ITENS)
+// ===========================================================================
 const STORE_CATALOG = {
-  'emoji_smile': { priceSilver: 1, type: 'emoji' },
-  'emoji_sad': { priceSilver: 1, type: 'emoji' },
-  'emoji_angry': { priceSilver: 1, type: 'emoji' },
-  'emoji_cool': { priceSilver: 1, type: 'emoji' },
+  'emoji_sweat': { priceSilver: 1, type: 'emoji' },
   'emoji_laugh': { priceSilver: 1, type: 'emoji' },
-  'emoji_wow': { priceSilver: 1, type: 'emoji' },
-  'emoji_cry': { priceSilver: 1, type: 'emoji' },
-  'emoji_love': { priceSilver: 1, type: 'emoji' }
+  'emoji_angry': { priceSilver: 1, type: 'emoji' },
+  'emoji_love': { priceSilver: 1, type: 'emoji' },
+  'emoji_thumbup': { priceSilver: 1, type: 'emoji' },
+  'emoji_thumbdown': { priceSilver: 1, type: 'emoji' },
+  'emoji_punch': { priceSilver: 1, type: 'emoji' },
+  'emoji_cool': { priceSilver: 1, type: 'emoji' }
 };
 
 // ===========================================================================
