@@ -43,9 +43,24 @@ const userSchema = new mongoose.Schema({
     trainingDone: { type: Boolean, default: false },
     trainingClaimed: { type: Boolean, default: false }
   },
+  ownedEmojis: [{ type: String }],
+  equippedEmojis: { type: [String], default: ["", "", "", "", "", "", "", ""] },
   createdAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', userSchema);
+// ===========================================================================
+// CATÁLOGO DA LOJA (PREÇOS E ITENS)
+// ===========================================================================
+const STORE_CATALOG = {
+  'emoji_smile': { priceSilver: 1, type: 'emoji' },
+  'emoji_sad': { priceSilver: 1, type: 'emoji' },
+  'emoji_angry': { priceSilver: 1, type: 'emoji' },
+  'emoji_cool': { priceSilver: 1, type: 'emoji' },
+  'emoji_laugh': { priceSilver: 1, type: 'emoji' },
+  'emoji_wow': { priceSilver: 1, type: 'emoji' },
+  'emoji_cry': { priceSilver: 1, type: 'emoji' },
+  'emoji_love': { priceSilver: 1, type: 'emoji' }
+};
 
 // ===========================================================================
 // 2. ESTADO GLOBAL
@@ -673,6 +688,90 @@ io.on('connection', (socket) => {
 
   socket.on('provide_game_state', (data) => {
     if (socket.roomId) socket.to(socket.roomId).emit('sync_game_state', data);
+  });
+
+  socket.on('provide_game_state', (data) => {
+    if (socket.roomId) socket.to(socket.roomId).emit('sync_game_state', data);
+  });
+
+  // ===========================================================================
+  // SISTEMA DE LOJA E INVENTÁRIO (COMPRA E EQUIPAMENTO)
+  // ===========================================================================
+  socket.on('get_inventory', async () => {
+    try {
+      const user = await User.findOne({ userId: socket.user.id });
+      if (user) {
+        socket.emit('inventory_data', {
+          ownedEmojis: user.ownedEmojis || [],
+          equippedEmojis: user.equippedEmojis || ["", "", "", "", "", "", "", ""]
+        });
+      }
+    } catch (e) {
+      console.error("Erro ao buscar inventário:", e);
+    }
+  });
+
+  socket.on('buy_item', async (itemId) => {
+    try {
+      const item = STORE_CATALOG[itemId];
+      if (!item) {
+        return socket.emit('buy_error', "Item não encontrado no catálogo.");
+      }
+
+      const user = await User.findOne({ userId: socket.user.id });
+      if (!user) return;
+
+      if (user.ownedEmojis.includes(itemId)) {
+        return socket.emit('buy_error', "Você já possui este item.");
+      }
+
+      if (user.silverCoins < item.priceSilver) {
+        return socket.emit('buy_error', "Prata insuficiente para a compra.");
+      }
+
+      user.silverCoins -= item.priceSilver;
+      user.ownedEmojis.push(itemId);
+      await user.save();
+
+      socket.emit('buy_success', {
+        itemId: itemId,
+        newSilver: user.silverCoins,
+        ownedEmojis: user.ownedEmojis
+      });
+
+    } catch (e) {
+      console.error("Erro ao processar compra:", e);
+      socket.emit('buy_error', "Ocorreu um erro ao processar a compra.");
+    }
+  });
+
+  socket.on('equip_emoji', async (data) => {
+    try {
+      const { slotIndex, itemId } = data;
+
+      if (slotIndex < 0 || slotIndex > 7) return;
+
+      const user = await User.findOne({ userId: socket.user.id });
+      if (!user) return;
+
+      if (itemId !== "" && !user.ownedEmojis.includes(itemId)) {
+        return socket.emit('equip_error', "Você não possui este emoji para equipar.");
+      }
+
+      if (!user.equippedEmojis || user.equippedEmojis.length !== 8) {
+        user.equippedEmojis = ["", "", "", "", "", "", "", ""];
+      }
+
+      user.equippedEmojis[slotIndex] = itemId;
+      await user.save();
+
+      socket.emit('equip_success', {
+        equippedEmojis: user.equippedEmojis
+      });
+
+    } catch (e) {
+      console.error("Erro ao equipar emoji:", e);
+    }
   });
 
   // --- REVANCHE ---
