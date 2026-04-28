@@ -876,8 +876,9 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('buy_item', async (itemId) => {
+  socket.on('buy_item', async (data) => {
     try {
+      const { itemId, currency } = data;
       const item = STORE_CATALOG[itemId];
       if (!item) {
         return socket.emit('buy_error', "Item não encontrado no catálogo.");
@@ -890,17 +891,25 @@ io.on('connection', (socket) => {
         return socket.emit('buy_error', "Você já possui este item.");
       }
 
-      if (user.silverCoins < item.priceSilver) {
-        return socket.emit('buy_error', "Prata insuficiente para a compra.");
+      if (currency === 'gold') {
+        if (user.goldCoins < item.priceGold) {
+          return socket.emit('buy_error', "Ouro insuficiente para a compra.");
+        }
+        user.goldCoins -= item.priceGold;
+      } else {
+        if (user.silverCoins < item.priceSilver) {
+          return socket.emit('buy_error', "Prata insuficiente para a compra.");
+        }
+        user.silverCoins -= item.priceSilver;
       }
 
-      user.silverCoins -= item.priceSilver;
       user.ownedEmojis.push(itemId);
       await user.save();
 
       socket.emit('buy_success', {
         itemId: itemId,
         newSilver: user.silverCoins,
+        newGold: user.goldCoins,
         ownedEmojis: user.ownedEmojis
       });
 
