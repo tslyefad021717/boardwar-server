@@ -43,13 +43,15 @@ const userSchema = new mongoose.Schema({
     gamesClaimed: { type: Boolean, default: false },
     trainingDone: { type: Boolean, default: false },
     trainingClaimed: { type: Boolean, default: false },
-    // Novas Missões Diárias
     rankedPlayed: { type: Number, default: 0 },
     rankedPlayedClaimed: { type: Boolean, default: false },
     rankedWins: { type: Number, default: 0 },
     rankedWinsClaimed: { type: Boolean, default: false },
     trainingGamesPlayed: { type: Number, default: 0 },
-    trainingGamesClaimed: { type: Boolean, default: false }
+    trainingGamesClaimed: { type: Boolean, default: false },
+    // NOVA MISSÃO:
+    botGamesPlayed: { type: Number, default: 0 },
+    botGamesClaimed: { type: Boolean, default: false }
   },
   lifetimeTasks: {
     ranked50Claimed: { type: Boolean, default: false },
@@ -86,7 +88,7 @@ function getTodayString() {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
-async function processPostMatchStats(userId, mode, result) {
+async function processPostMatchStats(userId, mode, result, isBot = false) {
   try {
     const user = await User.findOne({ userId });
     if (!user) return;
@@ -99,21 +101,26 @@ async function processPostMatchStats(userId, mode, result) {
         trainingDone: false, trainingClaimed: false,
         rankedPlayed: 0, rankedPlayedClaimed: false,
         rankedWins: 0, rankedWinsClaimed: false,
-        trainingGamesPlayed: 0, trainingGamesClaimed: false
+        trainingGamesPlayed: 0, trainingGamesClaimed: false,
+        botGamesPlayed: 0, botGamesClaimed: false
       };
     }
 
-    const isWin = ['win', 'victory', 'win_by_wo'].includes((result || '').toLowerCase());
-    const isMinigame = ['thief_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp', 'queen_pvp'].includes(mode);
-
     user.dailyTasks.gamesPlayed++;
+
+    // Se for contra o computador
+    if (isBot) {
+      user.dailyTasks.botGamesPlayed++;
+    }
 
     if (mode === 'ranked') {
       user.rankedGamesTotal = (user.rankedGamesTotal || 0) + 1;
       user.dailyTasks.rankedPlayed++;
+      const isWin = ['win', 'victory', 'win_by_wo'].includes((result || '').toLowerCase());
       if (isWin) user.dailyTasks.rankedWins++;
     }
 
+    const isMinigame = ['thief_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp', 'queen_pvp'].includes(mode);
     if (isMinigame) {
       user.dailyTasks.trainingGamesPlayed++;
     }
@@ -445,6 +452,9 @@ io.on('connection', (socket) => {
       } else if (taskType === 'training_games' && user.dailyTasks.trainingGamesPlayed >= 1 && !user.dailyTasks.trainingGamesClaimed) {
         user.dailyTasks.trainingGamesClaimed = true;
         rewardSilver = 25;
+      } else if (taskType === 'bot_games' && user.dailyTasks.botGamesPlayed >= 2 && !user.dailyTasks.botGamesClaimed) {
+        user.dailyTasks.botGamesClaimed = true;
+        rewardSilver = 50;
 
         // --- VALIDAÇÃO VITALÍCIA (LIFETIME) ---
       } else if (taskType === 'lifetime_50' && (user.rankedGamesTotal || 0) >= 50 && !user.lifetimeTasks.ranked50Claimed) {
@@ -473,6 +483,7 @@ io.on('connection', (socket) => {
         }
       }
 
+      // --- ENTREGA DA RECOMPENSA ---
       if (rewardSilver > 0 || rewardGold > 0) {
         user.silverCoins += rewardSilver;
         user.goldCoins += rewardGold;
@@ -989,6 +1000,9 @@ io.on('connection', (socket) => {
   // =================================================================
   // 🤖 GAME OVER PARA BOTS
   // =================================================================
+  // =================================================================
+  // 🤖 GAME OVER PARA BOTS
+  // =================================================================
   socket.on('report_bot_game_over', async (data) => {
     try {
       const { result, reason, myScore, oppScore, opponentId, mode } = data;
@@ -1028,8 +1042,8 @@ io.on('connection', (socket) => {
 
         await Promise.all([human.save(), bot.save()]);
 
-        // INCREMENTA ESTATÍSTICAS E MISSÕES AQUI
-        await processPostMatchStats(myUserId, mode, result);
+        // INCREMENTA ESTATÍSTICAS E MISSÕES AQUI (Passando true para isBot)
+        await processPostMatchStats(myUserId, mode, result, true);
       }
     } catch (e) {
       console.error("Erro ao atualizar ranking contra bot:", e);
@@ -1202,7 +1216,7 @@ io.on('connection', (socket) => {
       }, 25000);
     }
   });
-});
+}); // <--- ESTA É A CHAVE QUE FALTAVA (Ela fecha o io.on('connection'))
 
 // 🔴 CORRIGIDO: startMatch COM TUDO O QUE PRECISA
 // 🔴 CORRIGIDO: startMatch COM FLAG DE HUMANO E ID DO OPONENTE
@@ -1241,11 +1255,11 @@ async function startMatch(p1, p2, mode) {
       name: p2.user.name,
       elo: elo2,
       rank: getRankName(elo2),
-      id: p2.user.id // <--- ADICIONADO: ID do oponente humano
+      id: p2.user.id
     },
     mode: mode,
     mapSeed: (mode && mode.includes('horse')) ? mapSeed : 0,
-    isBot: false // <--- OBRIGATÓRIO: Garante que o Flutter desligue a IA
+    isBot: false
   };
 
   const p2Payload = {
@@ -1255,11 +1269,11 @@ async function startMatch(p1, p2, mode) {
       name: p1.user.name,
       elo: elo1,
       rank: getRankName(elo1),
-      id: p1.user.id // <--- ADICIONADO: ID do oponente humano
+      id: p1.user.id
     },
     mode: mode,
     mapSeed: (mode && mode.includes('horse')) ? mapSeed : 0,
-    isBot: false // <--- OBRIGATÓRIO: Garante que o Flutter desligue a IA
+    isBot: false
   };
 
   p1.emit('game_message', p1Payload);
