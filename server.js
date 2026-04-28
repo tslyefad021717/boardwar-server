@@ -619,6 +619,19 @@ io.on('connection', (socket) => {
       socket.to(rId).emit('game_message', msg);
     }
   });
+  socket.on('emoji', (data) => {
+    const rId = socket.roomId;
+
+    if (rId && activeMatches[rId]) {
+      socket.to(rId).emit('game_message', {
+        type: 'emoji',
+        emoji: String(data.emoji).substring(0, 5),
+        x: Number(data.x) || 0,
+        y: Number(data.y) || 0,
+        anim: data.anim
+      });
+    }
+  });
 
   socket.on('horse_action', (data) => {
     const rId = socket.roomId;
