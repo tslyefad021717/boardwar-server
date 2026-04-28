@@ -29,6 +29,7 @@ const userSchema = new mongoose.Schema({
   elo: { type: Number, default: 600 },
   wins: { type: Number, default: 0 },
   losses: { type: Number, default: 0 },
+  rankedGamesTotal: { type: Number, default: 0 }, // Novo: Contagem vitalícia de ranqueadas
   silverCoins: { type: Number, default: 0 },
   goldCoins: { type: Number, default: 0 },
   friends: [{ type: String }],
@@ -41,30 +42,101 @@ const userSchema = new mongoose.Schema({
     gamesPlayed: { type: Number, default: 0 },
     gamesClaimed: { type: Boolean, default: false },
     trainingDone: { type: Boolean, default: false },
-    trainingClaimed: { type: Boolean, default: false }
+    trainingClaimed: { type: Boolean, default: false },
+    // Novas Missões Diárias
+    rankedPlayed: { type: Number, default: 0 },
+    rankedPlayedClaimed: { type: Boolean, default: false },
+    rankedWins: { type: Number, default: 0 },
+    rankedWinsClaimed: { type: Boolean, default: false },
+    trainingGamesPlayed: { type: Number, default: 0 },
+    trainingGamesClaimed: { type: Boolean, default: false }
+  },
+  lifetimeTasks: {
+    ranked50Claimed: { type: Boolean, default: false },
+    ranked200Claimed: { type: Boolean, default: false },
+    ranked500Claimed: { type: Boolean, default: false },
+    ranked1000Claimed: { type: Boolean, default: false }
+  },
+  loginReward: {
+    lastLoginDate: { type: String, default: "" },
+    currentStreak: { type: Number, default: 0 },
+    todayClaimed: { type: Boolean, default: false }
   },
   ownedEmojis: [{ type: String }],
   equippedEmojis: { type: [String], default: ["", "", "", "", "", "", "", ""] },
   createdAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', userSchema);
+
 // ===========================================================================
-// CATÁLOGO DA LOJA (PREÇOS E ITENS)
+// FUNÇÕES DE TEMPO E ESTATÍSTICAS
 // ===========================================================================
+function getDiffDays(date1Str, date2Str) {
+  if (!date1Str || !date2Str) return 999;
+  const d1 = date1Str.split('-');
+  const d2 = date2Str.split('-');
+  const date1 = new Date(d1[0], d1[1] - 1, d1[2]);
+  const date2 = new Date(d2[0], d2[1] - 1, d2[2]);
+  const diffTime = date2 - date1;
+  return Math.floor(diffTime / (1000 * 60 * 60 * 24));
+}
+
+function getTodayString() {
+  const d = new Date();
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+
+async function processPostMatchStats(userId, mode, result) {
+  try {
+    const user = await User.findOne({ userId });
+    if (!user) return;
+
+    const today = getTodayString();
+    if (user.dailyTasks.date !== today) {
+      user.dailyTasks = {
+        date: today,
+        gamesPlayed: 0, gamesClaimed: false,
+        trainingDone: false, trainingClaimed: false,
+        rankedPlayed: 0, rankedPlayedClaimed: false,
+        rankedWins: 0, rankedWinsClaimed: false,
+        trainingGamesPlayed: 0, trainingGamesClaimed: false
+      };
+    }
+
+    const isWin = ['win', 'victory', 'win_by_wo'].includes((result || '').toLowerCase());
+    const isMinigame = ['thief_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp', 'queen_pvp'].includes(mode);
+
+    user.dailyTasks.gamesPlayed++;
+
+    if (mode === 'ranked') {
+      user.rankedGamesTotal = (user.rankedGamesTotal || 0) + 1;
+      user.dailyTasks.rankedPlayed++;
+      if (isWin) user.dailyTasks.rankedWins++;
+    }
+
+    if (isMinigame) {
+      user.dailyTasks.trainingGamesPlayed++;
+    }
+
+    await user.save();
+  } catch (e) {
+    console.error("Erro ao incrementar estatísticas pós-partida:", e);
+  }
+}
+
 // ===========================================================================
 // CATÁLOGO DA LOJA (PREÇOS E ITENS)
 // ===========================================================================
 const STORE_CATALOG = {
-  'emoji_sweat': { priceSilver: 1, type: 'emoji' },
-  'emoji_laugh': { priceSilver: 1, type: 'emoji' },
-  'emoji_angry': { priceSilver: 1, type: 'emoji' },
-  'emoji_love': { priceSilver: 1, type: 'emoji' },
-  'emoji_thumbup': { priceSilver: 1, type: 'emoji' },
-  'emoji_thumbdown': { priceSilver: 1, type: 'emoji' },
-  'emoji_punch': { priceSilver: 1, type: 'emoji' },
-  'emoji_cool': { priceSilver: 1, type: 'emoji' }
+  'emoji_sweat': { priceSilver: 100, priceGold: 10, type: 'emoji' },
+  'emoji_laugh': { priceSilver: 100, priceGold: 10, type: 'emoji' },
+  'emoji_angry': { priceSilver: 100, priceGold: 10, type: 'emoji' },
+  'emoji_love': { priceSilver: 100, priceGold: 10, type: 'emoji' },
+  'emoji_thumbup': { priceSilver: 100, priceGold: 10, type: 'emoji' },
+  'emoji_thumbdown': { priceSilver: 100, priceGold: 10, type: 'emoji' },
+  'emoji_punch': { priceSilver: 100, priceGold: 10, type: 'emoji' },
+  'emoji_cool': { priceSilver: 100, priceGold: 10, type: 'emoji' }
 };
-
 // ===========================================================================
 // 2. ESTADO GLOBAL
 // ===========================================================================
@@ -297,6 +369,9 @@ io.on('connection', (socket) => {
   // ===========================================================================
   // SISTEMA DE TAREFAS DIÁRIAS E RECOMPENSAS
   // ===========================================================================
+  // ===========================================================================
+  // SISTEMA DE TAREFAS DIÁRIAS, VITALÍCIAS E RECOMPENSAS DE LOGIN
+  // ===========================================================================
   socket.on('get_tasks', async () => {
     try {
       const user = await User.findOne({ userId: socket.user.id });
@@ -304,19 +379,43 @@ io.on('connection', (socket) => {
 
       const today = getTodayString();
 
-      // Se a data for diferente de hoje, reseta as tarefas
+      // Reset de Tarefas Diárias
       if (user.dailyTasks.date !== today) {
         user.dailyTasks = {
           date: today,
-          gamesPlayed: 0,
-          gamesClaimed: false,
-          trainingDone: false,
-          trainingClaimed: false
+          gamesPlayed: 0, gamesClaimed: false,
+          trainingDone: false, trainingClaimed: false,
+          rankedPlayed: 0, rankedPlayedClaimed: false,
+          rankedWins: 0, rankedWinsClaimed: false,
+          trainingGamesPlayed: 0, trainingGamesClaimed: false
         };
-        await user.save();
       }
 
-      socket.emit('tasks_data', user.dailyTasks);
+      // Verificação de Quebra de Login (Streak)
+      if (!user.loginReward) {
+        user.loginReward = { lastLoginDate: "", currentStreak: 0, todayClaimed: false };
+      }
+
+      if (user.loginReward.lastLoginDate !== today) {
+        const diff = getDiffDays(user.loginReward.lastLoginDate, today);
+
+        // Se a diferença for maior que 1 dia, perdeu a ofensiva (reset no calendário)
+        if (diff > 1 && user.loginReward.lastLoginDate !== "") {
+          user.loginReward.currentStreak = 0;
+        }
+
+        user.loginReward.todayClaimed = false;
+        user.loginReward.lastLoginDate = today;
+      }
+
+      await user.save();
+
+      socket.emit('tasks_data', {
+        dailyTasks: user.dailyTasks,
+        lifetimeTasks: user.lifetimeTasks || {},
+        loginReward: user.loginReward,
+        rankedGamesTotal: user.rankedGamesTotal || 0
+      });
     } catch (e) {
       console.error("Erro ao buscar tarefas:", e);
     }
@@ -327,26 +426,67 @@ io.on('connection', (socket) => {
       const user = await User.findOne({ userId: socket.user.id });
       if (!user) return;
 
-      let reward = 0;
+      let rewardSilver = 0;
+      let rewardGold = 0;
 
-      // Valida qual tarefa está sendo cobrada e se os requisitos foram cumpridos
+      // --- VALIDAÇÃO DIÁRIA ---
       if (taskType === 'games' && user.dailyTasks.gamesPlayed >= 3 && !user.dailyTasks.gamesClaimed) {
         user.dailyTasks.gamesClaimed = true;
-        reward = 50; // 50 moedas de prata
+        rewardSilver = 25;
       } else if (taskType === 'training' && user.dailyTasks.trainingDone && !user.dailyTasks.trainingClaimed) {
         user.dailyTasks.trainingClaimed = true;
-        reward = 25; // 25 moedas de prata
+        rewardSilver = 10;
+      } else if (taskType === 'ranked_played' && user.dailyTasks.rankedPlayed >= 3 && !user.dailyTasks.rankedPlayedClaimed) {
+        user.dailyTasks.rankedPlayedClaimed = true;
+        rewardSilver = 50;
+      } else if (taskType === 'ranked_wins' && user.dailyTasks.rankedWins >= 1 && !user.dailyTasks.rankedWinsClaimed) {
+        user.dailyTasks.rankedWinsClaimed = true;
+        rewardSilver = 50;
+      } else if (taskType === 'training_games' && user.dailyTasks.trainingGamesPlayed >= 1 && !user.dailyTasks.trainingGamesClaimed) {
+        user.dailyTasks.trainingGamesClaimed = true;
+        rewardSilver = 25;
+
+        // --- VALIDAÇÃO VITALÍCIA (LIFETIME) ---
+      } else if (taskType === 'lifetime_50' && (user.rankedGamesTotal || 0) >= 50 && !user.lifetimeTasks.ranked50Claimed) {
+        user.lifetimeTasks.ranked50Claimed = true;
+        rewardSilver = 100;
+      } else if (taskType === 'lifetime_200' && (user.rankedGamesTotal || 0) >= 200 && !user.lifetimeTasks.ranked200Claimed) {
+        user.lifetimeTasks.ranked200Claimed = true;
+        rewardSilver = 250;
+      } else if (taskType === 'lifetime_500' && (user.rankedGamesTotal || 0) >= 500 && !user.lifetimeTasks.ranked500Claimed) {
+        user.lifetimeTasks.ranked500Claimed = true;
+        rewardSilver = 500;
+      } else if (taskType === 'lifetime_1000' && (user.rankedGamesTotal || 0) >= 1000 && !user.lifetimeTasks.ranked1000Claimed) {
+        user.lifetimeTasks.ranked1000Claimed = true;
+        rewardSilver = 5000;
+
+        // --- LOGIN DIÁRIO DE 30 DIAS ---
+      } else if (taskType === 'login_reward' && !user.loginReward.todayClaimed) {
+        user.loginReward.todayClaimed = true;
+        user.loginReward.currentStreak++;
+
+        if (user.loginReward.currentStreak === 30) {
+          rewardGold = 30;
+          user.loginReward.currentStreak = 0; // Reinicia após pegar o prêmio master
+        } else {
+          rewardSilver = 10;
+        }
       }
 
-      if (reward > 0) {
-        user.silverCoins += reward;
+      if (rewardSilver > 0 || rewardGold > 0) {
+        user.silverCoins += rewardSilver;
+        user.goldCoins += rewardGold;
         await user.save();
 
         socket.emit('task_claimed_success', {
           taskType: taskType,
-          reward: reward,
+          rewardSilver: rewardSilver,
+          rewardGold: rewardGold,
           newSilver: user.silverCoins,
-          dailyTasks: user.dailyTasks
+          newGold: user.goldCoins,
+          dailyTasks: user.dailyTasks,
+          lifetimeTasks: user.lifetimeTasks,
+          loginReward: user.loginReward
         });
       } else {
         socket.emit('task_error', "Não foi possível coletar a recompensa.");
@@ -355,6 +495,7 @@ io.on('connection', (socket) => {
       console.error("Erro ao coletar tarefa:", e);
     }
   });
+
   // --- AMIGOS ---
   socket.on('add_friend', async (targetName) => {
     try {
@@ -702,9 +843,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('provide_game_state', (data) => {
-    if (socket.roomId) socket.to(socket.roomId).emit('sync_game_state', data);
-  });
 
   socket.on('provide_game_state', (data) => {
     if (socket.roomId) socket.to(socket.roomId).emit('sync_game_state', data);
@@ -890,8 +1028,8 @@ io.on('connection', (socket) => {
 
         await Promise.all([human.save(), bot.save()]);
 
-        // INCREMENTA A MISSÃO DIÁRIA AQUI
-        await incrementDailyGame(myUserId);
+        // INCREMENTA ESTATÍSTICAS E MISSÕES AQUI
+        await processPostMatchStats(myUserId, mode, result);
       }
     } catch (e) {
       console.error("Erro ao atualizar ranking contra bot:", e);
@@ -952,7 +1090,11 @@ io.on('connection', (socket) => {
           const realWinDelta = calculateEloDelta('win', data.reason, winnerScore, loserScore, winnerEloBefore, loserEloBefore);
           const finalWinPoints = Math.abs(realWinDelta) > 0 ? Math.abs(realWinDelta) : 10;
           const realLossDelta = calculateEloDelta('loss', data.reason, loserScore, winnerScore, loserEloBefore, winnerEloBefore);
-
+          // INCREMENTA ESTATÍSTICAS E MISSÕES DOS DOIS JOGADORES AQUI
+          const p1Result = (winner.userId === p1Data.id) ? 'win' : 'loss';
+          const p2Result = (winner.userId === p2Data.id) ? 'win' : 'loss';
+          await processPostMatchStats(p1Data.id, match.mode, p1Result);
+          await processPostMatchStats(p2Data.id, match.mode, p2Result);
           console.log(`[ELO CALC] Winner (${winner.username}): +${finalWinPoints} | Loser (${loser.username}): ${realLossDelta}`);
 
           winner.elo += finalWinPoints;
