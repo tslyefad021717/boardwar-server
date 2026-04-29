@@ -1026,6 +1026,18 @@ io.on('connection', (socket) => {
       console.error("Erro ao reportar treino:", e);
     }
   });
+  socket.on('report_minigame_played', async () => {
+    try {
+      const user = await User.findOne({ userId: socket.user.id });
+      if (user && user.dailyTasks.date === getTodayString()) {
+        user.dailyTasks.trainingGamesPlayed++;
+        await user.save();
+        console.log(`[TASKS] ${user.username} jogou um minijogo e a missão contou!`);
+      }
+    } catch (e) {
+      console.error("Erro ao reportar minigame:", e);
+    }
+  });
 
   // =================================================================
   // 🤖 GAME OVER PARA BOTS
