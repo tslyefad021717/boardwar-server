@@ -96,7 +96,6 @@ async function processPostMatchStats(userId, mode, result, isBot = false) {
     const today = getTodayString();
 
     if (user.dailyTasks.date !== today) {
-      // Reset normal para um novo dia
       user.dailyTasks = {
         date: today,
         gamesPlayed: 0, gamesClaimed: false,
@@ -107,7 +106,6 @@ async function processPostMatchStats(userId, mode, result, isBot = false) {
         botGamesPlayed: 0, botGamesClaimed: false
       };
     } else {
-      // VACINA: Garante que os campos novos existam para quem já logou hoje
       if (user.dailyTasks.rankedPlayed == null) user.dailyTasks.rankedPlayed = 0;
       if (user.dailyTasks.rankedWins == null) user.dailyTasks.rankedWins = 0;
       if (user.dailyTasks.trainingGamesPlayed == null) user.dailyTasks.trainingGamesPlayed = 0;
@@ -116,12 +114,12 @@ async function processPostMatchStats(userId, mode, result, isBot = false) {
 
     user.dailyTasks.gamesPlayed++;
 
-    // Se for contra o computador
-    if (isBot) {
+    // CORREÇÃO MÁSTER: Só conta como "Jogar contra PC" se NÃO for partida ranqueada.
+    // Assim o seu "Fake Ranked" continua em segredo absoluto.
+    if (isBot && mode !== 'ranked') {
       user.dailyTasks.botGamesPlayed++;
     }
 
-    // Se for ranqueada
     if (mode === 'ranked') {
       user.rankedGamesTotal = (user.rankedGamesTotal || 0) + 1;
       user.dailyTasks.rankedPlayed++;
@@ -129,14 +127,13 @@ async function processPostMatchStats(userId, mode, result, isBot = false) {
       if (isWin) user.dailyTasks.rankedWins++;
     }
 
-    // CORREÇÃO DOS NOMES: Lê qualquer variação de minijogo
-    const isMinigame = mode && (
-      mode.includes('thief') ||
-      mode.includes('horse') ||
-      mode.includes('tennis') ||
-      mode.includes('king') ||
-      mode.includes('queen')
-    ) && mode !== 'ranked' && mode !== 'friendly';
+    // CORREÇÃO DOS MINIJOGOS: Lê qualquer palavra-chave independente do modo exato do flutter
+    const safeMode = (mode || '').toLowerCase();
+    const isMinigame = safeMode.includes('thief') ||
+      safeMode.includes('horse') ||
+      safeMode.includes('tennis') ||
+      safeMode.includes('king') ||
+      safeMode.includes('queen');
 
     if (isMinigame) {
       user.dailyTasks.trainingGamesPlayed++;
@@ -1044,8 +1041,9 @@ io.on('connection', (socket) => {
       const human = await User.findOne({ userId: myUserId });
       const bot = await User.findOne({ userId: opponentId });
 
-      if (human && bot) {
-        if (mode === 'ranked') {
+      // CORREÇÃO: O if principal agora só exige que o humano exista
+      if (human) {
+        if (mode === 'ranked' && bot) {
           const humanDelta = calculateEloDelta(result, reason, myScore, oppScore, human.elo, bot.elo);
 
           const botResult = (result === 'win' || result === 'victory') ? 'loss' : 'win';
@@ -1062,18 +1060,19 @@ io.on('connection', (socket) => {
             rank: getRankName(human.elo)
           });
         } else {
-          console.log(`[BOT FRIENDLY] ${human.username} vs ${bot.username}: Elo mantido`);
+          // Amistoso ou Minigame (Soma apenas para o humano, pois o bot pode não existir no banco)
+          if (result === 'win' || result === 'victory') {
+            human.wins++;
+          } else {
+            human.losses++;
+          }
+          console.log(`[BOT FRIENDLY/MINIGAME] ${human.username} vs Bot: Estatísticas mantidas.`);
         }
 
-        if (result === 'win' || result === 'victory') {
-          human.wins++;
-          bot.losses++;
-        } else {
-          human.losses++;
-          bot.wins++;
+        await human.save();
+        if (bot) {
+          await bot.save();
         }
-
-        await Promise.all([human.save(), bot.save()]);
 
         // INCREMENTA ESTATÍSTICAS E MISSÕES AQUI (Passando true para isBot)
         await processPostMatchStats(myUserId, mode, result, true);
