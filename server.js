@@ -933,6 +933,9 @@ io.on('connection', (socket) => {
       const user = await User.findOne({ userId: socket.user.id });
       if (!user) return;
 
+      if (!user.ownedEmojis) user.ownedEmojis = [];
+      if (!user.ownedMaps) user.ownedMaps = [];
+
       if (item.type === 'emoji' && user.ownedEmojis.includes(itemId)) {
         return socket.emit('buy_error', "Você já possui este item.");
       }
@@ -966,7 +969,8 @@ io.on('connection', (socket) => {
         itemId: itemId,
         newSilver: user.silverCoins,
         newGold: user.goldCoins,
-        ownedEmojis: user.ownedEmojis
+        ownedEmojis: user.ownedEmojis,
+        ownedMaps: user.ownedMaps
       });
 
     } catch (e) {
