@@ -921,7 +921,9 @@ io.on('connection', (socket) => {
       if (user) {
         socket.emit('inventory_data', {
           ownedEmojis: user.ownedEmojis || [],
-          equippedEmojis: user.equippedEmojis || ["", "", "", "", "", "", "", ""]
+          equippedEmojis: user.equippedEmojis || ["", "", "", "", "", "", "", ""],
+          ownedMaps: user.ownedMaps || [],
+          equippedMap: user.equippedMap || ''
         });
       }
     } catch (e) {
@@ -969,7 +971,9 @@ io.on('connection', (socket) => {
 
       if (item.type === 'map') {
         user.ownedMaps.push(itemId);
+        user.markModified('ownedMaps');
       }
+
       await user.save();
 
       socket.emit('buy_success', {
