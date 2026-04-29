@@ -94,7 +94,9 @@ async function processPostMatchStats(userId, mode, result, isBot = false) {
     if (!user) return;
 
     const today = getTodayString();
+
     if (user.dailyTasks.date !== today) {
+      // Reset normal para um novo dia
       user.dailyTasks = {
         date: today,
         gamesPlayed: 0, gamesClaimed: false,
@@ -104,6 +106,12 @@ async function processPostMatchStats(userId, mode, result, isBot = false) {
         trainingGamesPlayed: 0, trainingGamesClaimed: false,
         botGamesPlayed: 0, botGamesClaimed: false
       };
+    } else {
+      // VACINA: Garante que os campos novos existam para quem já logou hoje
+      if (user.dailyTasks.rankedPlayed == null) user.dailyTasks.rankedPlayed = 0;
+      if (user.dailyTasks.rankedWins == null) user.dailyTasks.rankedWins = 0;
+      if (user.dailyTasks.trainingGamesPlayed == null) user.dailyTasks.trainingGamesPlayed = 0;
+      if (user.dailyTasks.botGamesPlayed == null) user.dailyTasks.botGamesPlayed = 0;
     }
 
     user.dailyTasks.gamesPlayed++;
@@ -113,6 +121,7 @@ async function processPostMatchStats(userId, mode, result, isBot = false) {
       user.dailyTasks.botGamesPlayed++;
     }
 
+    // Se for ranqueada
     if (mode === 'ranked') {
       user.rankedGamesTotal = (user.rankedGamesTotal || 0) + 1;
       user.dailyTasks.rankedPlayed++;
@@ -120,7 +129,15 @@ async function processPostMatchStats(userId, mode, result, isBot = false) {
       if (isWin) user.dailyTasks.rankedWins++;
     }
 
-    const isMinigame = ['thief_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp', 'queen_pvp'].includes(mode);
+    // CORREÇÃO DOS NOMES: Lê qualquer variação de minijogo
+    const isMinigame = mode && (
+      mode.includes('thief') ||
+      mode.includes('horse') ||
+      mode.includes('tennis') ||
+      mode.includes('king') ||
+      mode.includes('queen')
+    ) && mode !== 'ranked' && mode !== 'friendly';
+
     if (isMinigame) {
       user.dailyTasks.trainingGamesPlayed++;
     }
@@ -394,8 +411,15 @@ io.on('connection', (socket) => {
           trainingDone: false, trainingClaimed: false,
           rankedPlayed: 0, rankedPlayedClaimed: false,
           rankedWins: 0, rankedWinsClaimed: false,
-          trainingGamesPlayed: 0, trainingGamesClaimed: false
+          trainingGamesPlayed: 0, trainingGamesClaimed: false,
+          botGamesPlayed: 0, botGamesClaimed: false
         };
+      } else {
+        // VACINA VISUAL: Impede que as barras no Flutter fiquem vazias
+        if (user.dailyTasks.rankedPlayed == null) user.dailyTasks.rankedPlayed = 0;
+        if (user.dailyTasks.rankedWins == null) user.dailyTasks.rankedWins = 0;
+        if (user.dailyTasks.trainingGamesPlayed == null) user.dailyTasks.trainingGamesPlayed = 0;
+        if (user.dailyTasks.botGamesPlayed == null) user.dailyTasks.botGamesPlayed = 0;
       }
 
       // Verificação de Quebra de Login (Streak)
@@ -406,7 +430,7 @@ io.on('connection', (socket) => {
       if (user.loginReward.lastLoginDate !== today) {
         const diff = getDiffDays(user.loginReward.lastLoginDate, today);
 
-        // Se a diferença for maior que 1 dia, perdeu a ofensiva (reset no calendário)
+        // Se a diferença for maior que 1 dia, perdeu a ofensiva
         if (diff > 1 && user.loginReward.lastLoginDate !== "") {
           user.loginReward.currentStreak = 0;
         }
