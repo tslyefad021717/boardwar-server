@@ -460,17 +460,19 @@ io.on('connection', (socket) => {
       console.error("Erro ao buscar tarefas:", e);
     }
   });
-  socket.on('equip_map', async (mapId) => {
+  socket.on('equip_map', async (data) => {
     try {
+      const { mapId } = data;
+
       const user = await User.findOne({ userId: socket.user.id });
       if (!user) return;
 
-      // 🔒 segurança
       if (!user.ownedMaps.includes(mapId)) {
         return socket.emit('equip_error', "Você não possui esse mapa.");
       }
 
       user.equippedMap = mapId;
+      user.markModified('equippedMap');
       await user.save();
 
       socket.emit('equip_success', { equippedMap: mapId });
