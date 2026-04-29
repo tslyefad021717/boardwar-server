@@ -453,6 +453,26 @@ io.on('connection', (socket) => {
       console.error("Erro ao buscar tarefas:", e);
     }
   });
+  socket.on('equip_map', async (mapId) => {
+    try {
+      const user = await User.findOne({ userId: socket.user.id });
+      if (!user) return;
+
+      // 🔒 segurança
+      if (!user.ownedMaps.includes(mapId)) {
+        return socket.emit('equip_error', "Você não possui esse mapa.");
+      }
+
+      user.equippedMap = mapId;
+      await user.save();
+
+      socket.emit('equip_success', { equippedMap: mapId });
+
+    } catch (e) {
+      console.error("Erro ao equipar mapa:", e);
+      socket.emit('equip_error', "Erro ao equipar mapa.");
+    }
+  });
 
   socket.on('claim_task', async (taskType) => {
     try {
@@ -913,8 +933,12 @@ io.on('connection', (socket) => {
       const user = await User.findOne({ userId: socket.user.id });
       if (!user) return;
 
-      if (user.ownedEmojis.includes(itemId)) {
+      if (item.type === 'emoji' && user.ownedEmojis.includes(itemId)) {
         return socket.emit('buy_error', "Você já possui este item.");
+      }
+
+      if (item.type === 'map' && user.ownedMaps.includes(itemId)) {
+        return socket.emit('buy_error', "Você já possui este mapa.");
       }
 
       if (currency === 'gold') {
@@ -929,7 +953,13 @@ io.on('connection', (socket) => {
         user.silverCoins -= item.priceSilver;
       }
 
-      user.ownedEmojis.push(itemId);
+      if (item.type === 'emoji') {
+        user.ownedEmojis.push(itemId);
+      }
+
+      if (item.type === 'map') {
+        user.ownedMaps.push(itemId);
+      }
       await user.save();
 
       socket.emit('buy_success', {
