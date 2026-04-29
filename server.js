@@ -77,19 +77,22 @@ const User = mongoose.model('User', userSchema);
 // ===========================================================================
 // FUNÇÕES DE TEMPO E ESTATÍSTICAS
 // ===========================================================================
+// ===========================================================================
+// FUNÇÕES DE TEMPO E ESTATÍSTICAS
+// ===========================================================================
+function getTodayString() {
+  const dataBR = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+  return `${dataBR.getFullYear()}-${dataBR.getMonth() + 1}-${dataBR.getDate()}`;
+}
+
 function getDiffDays(date1Str, date2Str) {
   if (!date1Str || !date2Str) return 999;
   const d1 = date1Str.split('-');
   const d2 = date2Str.split('-');
-  const date1 = new Date(d1[0], d1[1] - 1, d1[2]);
-  const date2 = new Date(d2[0], d2[1] - 1, d2[2]);
+  const date1 = new Date(d1[0], d1[1] - 1, d1[2], 12, 0, 0);
+  const date2 = new Date(d2[0], d2[1] - 1, d2[2], 12, 0, 0);
   const diffTime = date2 - date1;
   return Math.floor(diffTime / (1000 * 60 * 60 * 24));
-}
-
-function getTodayString() {
-  const d = new Date();
-  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
 async function processPostMatchStats(userId, mode, result, isBot = false) {
@@ -109,6 +112,7 @@ async function processPostMatchStats(userId, mode, result, isBot = false) {
         trainingGamesPlayed: 0, trainingGamesClaimed: false,
         botGamesPlayed: 0, botGamesClaimed: false
       };
+      user.markModified('dailyTasks');
     } else {
       if (user.dailyTasks.rankedPlayed == null) user.dailyTasks.rankedPlayed = 0;
       if (user.dailyTasks.rankedWins == null) user.dailyTasks.rankedWins = 0;
@@ -143,6 +147,7 @@ async function processPostMatchStats(userId, mode, result, isBot = false) {
       user.dailyTasks.trainingGamesPlayed++;
     }
 
+    user.markModified('dailyTasks');
     await user.save();
   } catch (e) {
     console.error("Erro ao incrementar estatísticas pós-partida:", e);
@@ -416,6 +421,7 @@ io.on('connection', (socket) => {
           trainingGamesPlayed: 0, trainingGamesClaimed: false,
           botGamesPlayed: 0, botGamesClaimed: false
         };
+        user.markModified('dailyTasks');
       } else {
         // VACINA VISUAL: Impede que as barras no Flutter fiquem vazias
         if (user.dailyTasks.rankedPlayed == null) user.dailyTasks.rankedPlayed = 0;
@@ -439,6 +445,7 @@ io.on('connection', (socket) => {
 
         user.loginReward.todayClaimed = false;
         user.loginReward.lastLoginDate = today;
+        user.markModified('loginReward');
       }
 
       await user.save();
