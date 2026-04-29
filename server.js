@@ -66,6 +66,10 @@ const userSchema = new mongoose.Schema({
   },
   ownedEmojis: [{ type: String }],
   equippedEmojis: { type: [String], default: ["", "", "", "", "", "", "", ""] },
+
+  ownedMaps: [{ type: String }],
+  equippedMap: { type: String, default: '' },
+
   createdAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', userSchema);
