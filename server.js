@@ -166,7 +166,7 @@ const STORE_CATALOG = {
   'emoji_thumbdown': { priceSilver: 100, priceGold: 10, type: 'emoji' },
   'emoji_punch': { priceSilver: 100, priceGold: 10, type: 'emoji' },
   'emoji_cool': { priceSilver: 100, priceGold: 10, type: 'emoji' },
-  'map_zumbi': { priceSilver: 1, priceGold: 0, type: 'map' },
+  'map_zumbi': { priceSilver: 1000, priceGold: 100, type: 'map' },
 };
 // ===========================================================================
 // 2. ESTADO GLOBAL
