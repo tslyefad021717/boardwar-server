@@ -467,6 +467,15 @@ io.on('connection', (socket) => {
       const user = await User.findOne({ userId: socket.user.id });
       if (!user) return;
 
+      // 🔴 NOVA LÓGICA: Se o aplicativo enviar vazio, significa "Desequipar"
+      if (mapId === "") {
+        user.equippedMap = "";
+        user.markModified('equippedMap');
+        await user.save();
+        return socket.emit('equip_success', { equippedMap: "" });
+      }
+
+      // Validação normal se for equipar um mapa existente
       if (!user.ownedMaps.includes(mapId)) {
         return socket.emit('equip_error', "Você não possui esse mapa.");
       }
