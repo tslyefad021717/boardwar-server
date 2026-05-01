@@ -26,6 +26,8 @@ const onlineUsers = {};
 const userSchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true },
   username: { type: String, required: true, unique: true },
+  googleId: { type: String, unique: true, sparse: true },
+  email: { type: String },
   elo: { type: Number, default: 600 },
   wins: { type: Number, default: 0 },
   losses: { type: Number, default: 0 },
@@ -397,6 +399,48 @@ io.on('connection', (socket) => {
       socket.emit('register_response', { success: false, message: "Erro no servidor ou nome já em uso." });
     }
   });
+
+  socket.on('link_google_account', async (data) => {
+    try {
+      const { googleId, email, name } = data;
+      const currentUserId = socket.user.id;
+
+      // 1. Verifica se já existe um usuário com este Google ID
+      let existingUser = await User.findOne({ googleId });
+
+      if (existingUser) {
+        // CONTA ENCONTRADA: O jogador trocou de celular ou reinstalou
+        // Vamos avisar o Flutter para trocar o userId local pelo desta conta
+        socket.user.id = existingUser.userId;
+        socket.user.name = existingUser.username;
+
+        socket.emit('google_link_success', {
+          action: 'recovered',
+          userId: existingUser.userId,
+          username: existingUser.username,
+          elo: existingUser.elo,
+          silver: existingUser.silverCoins,
+          gold: existingUser.goldCoins
+        });
+        console.log(`[AUTH] Conta recuperada: ${existingUser.username}`);
+      } else {
+        // VINCULAR NOVA CONTA: Vincula o e-mail à conta de visitante atual
+        let user = await User.findOne({ userId: currentUserId });
+        if (user) {
+          user.googleId = googleId;
+          user.email = email;
+          await user.save();
+
+          socket.emit('google_link_success', { action: 'linked' });
+          console.log(`[AUTH] Conta vinculada: ${user.username}`);
+        }
+      }
+    } catch (e) {
+      console.error("Erro ao vincular Google:", e);
+      socket.emit('google_link_error', "Erro ao processar login com Google.");
+    }
+  });
+
   // ===========================================================================
   // SISTEMA DE TAREFAS DIÁRIAS E RECOMPENSAS
   // ===========================================================================
