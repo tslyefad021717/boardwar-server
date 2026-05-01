@@ -1336,7 +1336,6 @@ io.on('connection', (socket) => {
             match.isFinished = true;
             io.to(rId).emit('game_message', { type: 'game_over', reason: 'opponent_disconnected', result: 'win_by_wo' });
 
-            // Punição WO
             if (match.mode === 'ranked') {
               try {
                 const quitter = await User.findOne({ userId: socket.user.id });
@@ -1365,9 +1364,55 @@ io.on('connection', (socket) => {
       }, 25000);
     }
   });
-}); // <--- ESTA É A CHAVE QUE FALTAVA (Ela fecha o io.on('connection'))
 
-// 🔴 CORRIGIDO: startMatch COM TUDO O QUE PRECISA
+  // ===========================================================================
+  // PROCESSAMENTO DE COMPRAS REAIS (OURO) - DENTRO DA CONEXÃO!
+  // ===========================================================================
+  socket.on('verify_purchase', async (data) => {
+    try {
+      const { productId, userId } = data;
+      console.log(`[SHOP] Verificando compra: ${productId} para o usuário ${userId}`);
+
+      const user = await User.findOne({ userId: socket.user.id });
+
+      if (!user) {
+        return socket.emit('buy_error', "Usuário não encontrado no servidor.");
+      }
+
+      let goldToAdd = 0;
+      if (productId === 'gold_pack_100') {
+        goldToAdd = 105;
+      } else if (productId === 'gold_pack_300') {
+        goldToAdd = 321;
+      } else if (productId === 'gold_pack_500') {
+        goldToAdd = 545;
+      } else if (productId === 'gold_pack_1000') {
+        goldToAdd = 1150;
+      }
+
+      if (goldToAdd > 0) {
+        user.goldCoins += goldToAdd;
+        await user.save();
+
+        socket.emit('buy_success', {
+          newGold: user.goldCoins,
+          message: `Sucesso! Seu tesouro foi abastecido com ${goldToAdd} moedas de ouro.`
+        });
+
+        console.log(`[SHOP] ${goldToAdd} de Ouro entregues a ${user.username} (ID: ${productId})`);
+      } else {
+        console.log(`[SHOP] Erro: Produto inválido: ${productId}`);
+        socket.emit('buy_error', "Falha ao identificar o pacote de ouro.");
+      }
+
+    } catch (e) {
+      console.error("[SHOP] Erro crítico na verificação:", e);
+      socket.emit('buy_error', "Erro interno ao processar sua compra.");
+    }
+  });
+
+}); // <--- ESTA É A CHAVE QUE FECHA O io.on('connection') - ELA FICA AQUI AGORA!
+
 // 🔴 CORRIGIDO: startMatch COM FLAG DE HUMANO E ID DO OPONENTE
 async function startMatch(p1, p2, mode) {
   const roomId = uuidv4();
@@ -1396,7 +1441,6 @@ async function startMatch(p1, p2, mode) {
     isFinished: false
   };
 
-  // Payload Universal (Agora com isBot: false e ID do oponente)
   const p1Payload = {
     type: 'match_start',
     isPlayer1: true,
@@ -1430,55 +1474,5 @@ async function startMatch(p1, p2, mode) {
 
   console.log(`[MATCH START] Sala ${roomId} criada. Modo: ${mode}. ${p1.user.name} vs ${p2.user.name}`);
 }
-// ===========================================================================
-// PROCESSAMENTO DE COMPRAS REAIS (OURO) - VERSÃO LIMPA
-// ===========================================================================
-socket.on('verify_purchase', async (data) => {
-  try {
-    const { productId, userId } = data;
-    console.log(`[SHOP] Verificando compra: ${productId} para o usuário ${userId}`);
-
-    // Busca o usuário no banco de dados
-    const user = await User.findOne({ userId: socket.user.id });
-
-    if (!user) {
-      return socket.emit('buy_error', "Usuário não encontrado no servidor.");
-    }
-
-    let goldToAdd = 0;
-
-    // Lógica de pacotes com bônus progressivo: 5%, 7%, 9% e 15%
-    if (productId === 'gold_pack_100') {
-      goldToAdd = 105; // 100 + 5%
-    } else if (productId === 'gold_pack_300') {
-      goldToAdd = 321; // 300 + 7%
-    } else if (productId === 'gold_pack_500') {
-      goldToAdd = 545; // 500 + 9%
-    } else if (productId === 'gold_pack_1000') {
-      goldToAdd = 1150; // 1000 + 15%
-    }
-
-    if (goldToAdd > 0) {
-      // Adiciona o ouro e salva
-      user.goldCoins += goldToAdd;
-      await user.save();
-
-      // Avisa o cliente (Flutter) do sucesso
-      socket.emit('buy_success', {
-        newGold: user.goldCoins,
-        message: `Sucesso! Seu tesouro foi abastecido com ${goldToAdd} moedas de ouro.`
-      });
-
-      console.log(`[SHOP] ${goldToAdd} de Ouro entregues a ${user.username} (ID: ${productId})`);
-    } else {
-      console.log(`[SHOP] Erro: Produto inválido: ${productId}`);
-      socket.emit('buy_error', "Falha ao identificar o pacote de ouro.");
-    }
-
-  } catch (e) {
-    console.error("[SHOP] Erro crítico na verificação:", e);
-    socket.emit('buy_error', "Erro interno ao processar sua compra.");
-  }
-});
 
 server.listen(process.env.PORT || 8080, () => console.log(`Servidor Ativo`));
