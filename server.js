@@ -405,12 +405,9 @@ io.on('connection', (socket) => {
       const { googleId, email, name } = data;
       const currentUserId = socket.user.id;
 
-      // 1. Verifica se já existe um usuário com este Google ID
       let existingUser = await User.findOne({ googleId });
 
       if (existingUser) {
-        // CONTA ENCONTRADA: O jogador trocou de celular ou reinstalou
-        // Vamos avisar o Flutter para trocar o userId local pelo desta conta
         socket.user.id = existingUser.userId;
         socket.user.name = existingUser.username;
 
@@ -424,7 +421,6 @@ io.on('connection', (socket) => {
         });
         console.log(`[AUTH] Conta recuperada: ${existingUser.username}`);
       } else {
-        // VINCULAR NOVA CONTA: Vincula o e-mail à conta de visitante atual
         let user = await User.findOne({ userId: currentUserId });
         if (user) {
           user.googleId = googleId;
@@ -433,6 +429,9 @@ io.on('connection', (socket) => {
 
           socket.emit('google_link_success', { action: 'linked' });
           console.log(`[AUTH] Conta vinculada: ${user.username}`);
+        } else {
+          // 🔴 AQUI ESTAVA A FALHA SILENCIOSA! AGORA ELE AVISA:
+          socket.emit('google_link_error', "Usuário não encontrado no banco de dados para vincular.");
         }
       }
     } catch (e) {
