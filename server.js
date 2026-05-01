@@ -503,6 +503,23 @@ io.on('connection', (socket) => {
       console.error("Erro ao buscar tarefas:", e);
     }
   });
+
+  // ===========================================================================
+  // SINCRONIZAÇÃO DE CARTEIRA (PUXA OS DADOS REAIS DO MONGODB)
+  // ===========================================================================
+  socket.on('sync_wallet', async () => {
+    try {
+      const user = await User.findOne({ userId: socket.user.id });
+      if (user) {
+        socket.emit('wallet_update', {
+          silver: user.silverCoins,
+          gold: user.goldCoins
+        });
+      }
+    } catch (e) {
+      console.error("Erro ao sincronizar carteira:", e);
+    }
+  });
   socket.on('equip_map', async (data) => {
     try {
       const { mapId } = data;
