@@ -179,6 +179,7 @@ const STORE_CATALOG = {
   'item_tumulo': { priceSilver: 2000, priceGold: 200, type: 'item' },
   'item_gosmazumbi': { priceSilver: 1500, priceGold: 150, type: 'item' },
   'item_poca_sangue': { priceSilver: 1500, priceGold: 150, type: 'item' },
+  'monstros': { priceSilver: 5400, priceGold: 270, type: 'item' },
 };
 // ===========================================================================
 // 2. ESTADO GLOBAL
