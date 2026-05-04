@@ -34,6 +34,8 @@ const userSchema = new mongoose.Schema({
   rankedGamesTotal: { type: Number, default: 0 }, // Novo: Contagem vitalícia de ranqueadas
   silverCoins: { type: Number, default: 0 },
   goldCoins: { type: Number, default: 0 },
+  ownedItems: [{ type: String }],
+  equippedItem: { type: String, default: '' },
   friends: [{ type: String }],
   notifications: [{
     type: { type: String },
@@ -174,6 +176,9 @@ const STORE_CATALOG = {
   'emoji_punch': { priceSilver: 100, priceGold: 10, type: 'emoji' },
   'emoji_cool': { priceSilver: 100, priceGold: 10, type: 'emoji' },
   'map_zumbi': { priceSilver: 1000, priceGold: 100, type: 'map' },
+  'item_tumulo': { priceSilver: 1500, priceGold: 150, type: 'item' },
+  'item_gosmazumbi': { priceSilver: 1500, priceGold: 150, type: 'item' },
+  'item_poca_sangue': { priceSilver: 1500, priceGold: 150, type: 'item' },
 };
 // ===========================================================================
 // 2. ESTADO GLOBAL
@@ -555,6 +560,25 @@ io.on('connection', (socket) => {
     } catch (e) {
       console.error("Erro ao equipar mapa:", e);
       socket.emit('equip_error', "Erro ao equipar mapa.");
+    }
+  });
+  socket.on('equip_item', async (data) => {
+    try {
+      const { itemId } = data;
+      const user = await User.findOne({ userId: socket.user.id });
+      if (!user) return;
+
+      if (itemId === "") {
+        user.equippedItem = "";
+      } else {
+        if (!user.ownedItems.includes(itemId)) return socket.emit('equip_error', "Você não possui este item.");
+        user.equippedItem = itemId;
+      }
+      user.markModified('equippedItem');
+      await user.save();
+      socket.emit('equip_success', { equippedItem: user.equippedItem });
+    } catch (e) {
+      console.error(e);
     }
   });
 
@@ -1030,7 +1054,9 @@ io.on('connection', (socket) => {
           ownedEmojis: user.ownedEmojis || [],
           equippedEmojis: user.equippedEmojis || ["", "", "", "", "", "", "", ""],
           ownedMaps: user.ownedMaps || [],
-          equippedMap: user.equippedMap || ''
+          equippedMap: user.equippedMap || '',
+          ownedItems: user.ownedItems || [],
+          equippedItem: user.equippedItem || ''
         });
       }
     } catch (e) {
@@ -1051,15 +1077,20 @@ io.on('connection', (socket) => {
 
       if (!user.ownedEmojis) user.ownedEmojis = [];
       if (!user.ownedMaps) user.ownedMaps = [];
+      if (!user.ownedItems) user.ownedItems = []; // Inicializa a lista de efeitos de abate
 
+      // Verifica se já possui
       if (item.type === 'emoji' && user.ownedEmojis.includes(itemId)) {
         return socket.emit('buy_error', "Você já possui este item.");
       }
-
       if (item.type === 'map' && user.ownedMaps.includes(itemId)) {
         return socket.emit('buy_error', "Você já possui este mapa.");
       }
+      if (item.type === 'item' && user.ownedItems.includes(itemId)) {
+        return socket.emit('buy_error', "Você já possui este efeito de abate.");
+      }
 
+      // Desconta o valor
       if (currency === 'gold') {
         if (user.goldCoins < item.priceGold) {
           return socket.emit('buy_error', "Ouro insuficiente para a compra.");
@@ -1072,23 +1103,29 @@ io.on('connection', (socket) => {
         user.silverCoins -= item.priceSilver;
       }
 
+      // Entrega o produto
       if (item.type === 'emoji') {
         user.ownedEmojis.push(itemId);
       }
-
       if (item.type === 'map') {
         user.ownedMaps.push(itemId);
         user.markModified('ownedMaps');
       }
+      if (item.type === 'item') {
+        user.ownedItems.push(itemId);
+        user.markModified('ownedItems');
+      }
 
       await user.save();
 
+      // Devolve para o celular
       socket.emit('buy_success', {
         itemId: itemId,
         newSilver: user.silverCoins,
         newGold: user.goldCoins,
         ownedEmojis: user.ownedEmojis,
-        ownedMaps: user.ownedMaps
+        ownedMaps: user.ownedMaps,
+        ownedItems: user.ownedItems
       });
 
     } catch (e) {
@@ -1504,7 +1541,9 @@ async function startMatch(p1, p2, mode) {
     },
     mode: mode,
     mapSeed: (mode && mode.includes('horse')) ? mapSeed : 0,
-    isBot: false
+    isBot: false,
+    myEquippedItem: u1 ? (u1.equippedItem || '') : '',
+    opponentItem: u2 ? (u2.equippedItem || '') : ''
   };
 
   const p2Payload = {
@@ -1518,7 +1557,9 @@ async function startMatch(p1, p2, mode) {
     },
     mode: mode,
     mapSeed: (mode && mode.includes('horse')) ? mapSeed : 0,
-    isBot: false
+    isBot: false,
+    myEquippedItem: u2 ? (u2.equippedItem || '') : '',
+    opponentItem: u1 ? (u1.equippedItem || '') : ''
   };
 
   p1.emit('game_message', p1Payload);
