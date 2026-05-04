@@ -176,7 +176,7 @@ const STORE_CATALOG = {
   'emoji_punch': { priceSilver: 100, priceGold: 10, type: 'emoji' },
   'emoji_cool': { priceSilver: 100, priceGold: 10, type: 'emoji' },
   'map_zumbi': { priceSilver: 1000, priceGold: 100, type: 'map' },
-  'item_tumulo': { priceSilver: 1500, priceGold: 150, type: 'item' },
+  'item_tumulo': { priceSilver: 2000, priceGold: 200, type: 'item' },
   'item_gosmazumbi': { priceSilver: 1500, priceGold: 150, type: 'item' },
   'item_poca_sangue': { priceSilver: 1500, priceGold: 150, type: 'item' },
 };
