@@ -61,6 +61,11 @@ const userSchema = new mongoose.Schema({
     ranked500Claimed: { type: Boolean, default: false },
     ranked1000Claimed: { type: Boolean, default: false }
   },
+  uniqueTasks: {
+    tutorialClaimed: { type: Boolean, default: false },
+    rateClaimed: { type: Boolean, default: false },
+    inviteLastClaimedDate: { type: String, default: "" }
+  },
   loginReward: {
     lastLoginDate: { type: String, default: "" },
     currentStreak: { type: Number, default: 0 },
@@ -496,6 +501,7 @@ io.on('connection', (socket) => {
       socket.emit('tasks_data', {
         dailyTasks: user.dailyTasks,
         lifetimeTasks: user.lifetimeTasks || {},
+        uniqueTasks: user.uniqueTasks || {},
         loginReward: user.loginReward,
         rankedGamesTotal: user.rankedGamesTotal || 0
       });
@@ -605,6 +611,35 @@ io.on('connection', (socket) => {
         } else {
           rewardSilver = 10;
         }
+
+        // --- MISSÕES ÚNICAS ---
+      } else if (taskType === 'unique_tutorial' && (!user.uniqueTasks || !user.uniqueTasks.tutorialClaimed)) {
+        if (!user.uniqueTasks) user.uniqueTasks = { tutorialClaimed: false, rateClaimed: false, inviteLastClaimedDate: "" };
+        user.uniqueTasks.tutorialClaimed = true;
+        rewardSilver = 150;
+      } else if (taskType === 'unique_rate' && (!user.uniqueTasks || !user.uniqueTasks.rateClaimed)) {
+        if (!user.uniqueTasks) user.uniqueTasks = { tutorialClaimed: false, rateClaimed: false, inviteLastClaimedDate: "" };
+        user.uniqueTasks.rateClaimed = true;
+        rewardSilver = 150;
+      } else if (taskType === 'unique_invite') {
+        if (!user.uniqueTasks) user.uniqueTasks = { tutorialClaimed: false, rateClaimed: false, inviteLastClaimedDate: "" };
+        const today = getTodayString();
+        const lastClaimed = user.uniqueTasks.inviteLastClaimedDate || "";
+        let canClaim = false;
+
+        if (lastClaimed === "") {
+          canClaim = true;
+        } else {
+          const diff = getDiffDays(lastClaimed, today);
+          if (diff >= 7) {
+            canClaim = true;
+          }
+        }
+
+        if (canClaim) {
+          user.uniqueTasks.inviteLastClaimedDate = today;
+          rewardSilver = 150;
+        }
       }
 
       // --- ENTREGA DA RECOMPENSA ---
@@ -621,6 +656,7 @@ io.on('connection', (socket) => {
           newGold: user.goldCoins,
           dailyTasks: user.dailyTasks,
           lifetimeTasks: user.lifetimeTasks,
+          uniqueTasks: user.uniqueTasks,
           loginReward: user.loginReward
         });
       } else {
