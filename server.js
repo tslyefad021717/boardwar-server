@@ -1544,7 +1544,8 @@ async function startMatch(p1, p2, mode) {
     mapSeed: (mode && mode.includes('horse')) ? mapSeed : 0,
     isBot: false,
     myEquippedItem: u1 ? (u1.equippedItem || '') : '',
-    opponentItem: u2 ? (u2.equippedItem || '') : ''
+    opponentItem: u2 ? (u2.equippedItem || '') : '',
+    opponentSkin: u2 ? (u2.equippedItem || '') : '' // <-- TEM QUE ADICIONAR ISSO (Lendo de u2.equippedSkin se tiver no banco)
   };
 
   const p2Payload = {
