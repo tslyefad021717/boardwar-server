@@ -1179,6 +1179,27 @@ io.on('connection', (socket) => {
     }
   });
 
+  // 🔴 NOVO: Função para equipar Skins no Banco de Dados
+  socket.on('equip_skin', async (data) => {
+    try {
+      const skinId = data.skinId || data.itemId;
+      const user = await User.findOne({ userId: socket.user.id });
+      if (!user) return;
+
+      if (!skinId || skinId === "") {
+        user.equippedSkin = "";
+      } else {
+        if (!user.ownedSkins.includes(skinId)) return socket.emit('equip_error', "Você não possui esta skin.");
+        user.equippedSkin = skinId;
+      }
+      user.markModified('equippedSkin');
+      await user.save();
+      socket.emit('equip_success', { equippedSkin: user.equippedSkin });
+    } catch (e) {
+      console.error(e);
+    }
+  });
+
   // --- REVANCHE ---
   socket.on('request_rematch', () => {
     if (socket.roomId && activeMatches[socket.roomId]) {
@@ -1560,7 +1581,9 @@ async function startMatch(p1, p2, mode) {
     isBot: false,
     myEquippedItem: u1 ? (u1.equippedItem || '') : '',
     opponentItem: u2 ? (u2.equippedItem || '') : '',
-    opponentSkin: u2 ? (u2.equippedItem || '') : '' // <-- TEM QUE ADICIONAR ISSO (Lendo de u2.equippedSkin se tiver no banco)
+    // 🔴 CORRIGIDO: Puxando da variável certa e enviando as duas
+    myEquippedSkin: u1 ? (u1.equippedSkin || '') : '',
+    opponentSkin: u2 ? (u2.equippedSkin || '') : ''
   };
 
   const p2Payload = {
@@ -1576,7 +1599,10 @@ async function startMatch(p1, p2, mode) {
     mapSeed: (mode && mode.includes('horse')) ? mapSeed : 0,
     isBot: false,
     myEquippedItem: u2 ? (u2.equippedItem || '') : '',
-    opponentItem: u1 ? (u1.equippedItem || '') : ''
+    opponentItem: u1 ? (u1.equippedItem || '') : '',
+    // 🔴 CORRIGIDO: Adicionado cruzamento de skins para o P2
+    myEquippedSkin: u2 ? (u2.equippedSkin || '') : '',
+    opponentSkin: u1 ? (u1.equippedSkin || '') : ''
   };
 
   p1.emit('game_message', p1Payload);
