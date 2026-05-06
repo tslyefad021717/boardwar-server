@@ -36,6 +36,9 @@ const userSchema = new mongoose.Schema({
   goldCoins: { type: Number, default: 0 },
   ownedItems: [{ type: String }],
   equippedItem: { type: String, default: '' },
+  // 🔴 ADICIONADO: Banco de dados agora sabe o que é Skin!
+  ownedSkins: [{ type: String }],
+  equippedSkin: { type: String, default: '' },
   friends: [{ type: String }],
   notifications: [{
     type: { type: String },
@@ -179,7 +182,7 @@ const STORE_CATALOG = {
   'item_tumulo': { priceSilver: 2000, priceGold: 200, type: 'item' },
   'item_gosmazumbi': { priceSilver: 1500, priceGold: 150, type: 'item' },
   'item_poca_sangue': { priceSilver: 1500, priceGold: 150, type: 'item' },
-  'monstros': { priceSilver: 5400, priceGold: 270, type: 'item' },
+  'monstros': { priceSilver: 5400, priceGold: 270, type: 'skin' },
 };
 // ===========================================================================
 // 2. ESTADO GLOBAL
@@ -1057,7 +1060,10 @@ io.on('connection', (socket) => {
           ownedMaps: user.ownedMaps || [],
           equippedMap: user.equippedMap || '',
           ownedItems: user.ownedItems || [],
-          equippedItem: user.equippedItem || ''
+          equippedItem: user.equippedItem || '',
+          // 🔴 ADICIONADO: Envia as skins que ele tem
+          ownedSkins: user.ownedSkins || [],
+          equippedSkin: user.equippedSkin || ''
         });
       }
     } catch (e) {
@@ -1079,6 +1085,7 @@ io.on('connection', (socket) => {
       if (!user.ownedEmojis) user.ownedEmojis = [];
       if (!user.ownedMaps) user.ownedMaps = [];
       if (!user.ownedItems) user.ownedItems = []; // Inicializa a lista de efeitos de abate
+      if (!user.ownedSkins) user.ownedSkins = []; // 🔴 INICIALIZA SKINS
 
       // Verifica se já possui
       if (item.type === 'emoji' && user.ownedEmojis.includes(itemId)) {
@@ -1089,6 +1096,9 @@ io.on('connection', (socket) => {
       }
       if (item.type === 'item' && user.ownedItems.includes(itemId)) {
         return socket.emit('buy_error', "Você já possui este efeito de abate.");
+      }
+      if (item.type === 'skin' && user.ownedSkins.includes(itemId)) { // 🔴 TRAVA DA SKIN
+        return socket.emit('buy_error', "Você já possui esta skin.");
       }
 
       // Desconta o valor
@@ -1116,6 +1126,10 @@ io.on('connection', (socket) => {
         user.ownedItems.push(itemId);
         user.markModified('ownedItems');
       }
+      if (item.type === 'skin') { // 🔴 ENTREGA A SKIN
+        user.ownedSkins.push(itemId);
+        user.markModified('ownedSkins');
+      }
 
       await user.save();
 
@@ -1126,7 +1140,8 @@ io.on('connection', (socket) => {
         newGold: user.goldCoins,
         ownedEmojis: user.ownedEmojis,
         ownedMaps: user.ownedMaps,
-        ownedItems: user.ownedItems
+        ownedItems: user.ownedItems,
+        ownedSkins: user.ownedSkins // 🔴 DEVOLVE A LISTA ATUALIZADA
       });
 
     } catch (e) {
