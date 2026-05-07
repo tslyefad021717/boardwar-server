@@ -1186,10 +1186,17 @@ io.on('connection', (socket) => {
       const user = await User.findOne({ userId: socket.user.id });
       if (!user) return;
 
+      // 🔴 PREVINE CRASH SE A CONTA FOR ANTIGA E NÃO TIVER ESSAS LISTAS
+      if (!user.ownedSkins) user.ownedSkins = [];
+      if (!user.ownedItems) user.ownedItems = [];
+
       if (!skinId || skinId === "") {
         user.equippedSkin = "";
       } else {
-        if (!user.ownedSkins.includes(skinId)) return socket.emit('equip_error', "Você não possui esta skin.");
+        // 🔴 ACEITA A SKIN SE ESTIVER NA LISTA NOVA OU NA COMPRA ANTIGA
+        if (!user.ownedSkins.includes(skinId) && !user.ownedItems.includes(skinId)) {
+          return socket.emit('equip_error', "Você não possui esta skin.");
+        }
         user.equippedSkin = skinId;
       }
       user.markModified('equippedSkin');
@@ -1276,10 +1283,33 @@ io.on('connection', (socket) => {
   // =================================================================
   // 🤖 GAME OVER PARA BOTS
   // =================================================================
+
+  // 🔴 NOVO: Registra o início da partida e cria a sala de vigilância
+  socket.on('start_bot_match', (data) => {
+    const roomId = "bot_room_" + socket.user.id;
+    socket.roomId = roomId;
+
+    activeMatches[roomId] = {
+      p1: { id: socket.user.id, name: socket.user.name },
+      p2: { id: data.opponentId, name: "Fake Humano" },
+      mode: data.mode,
+      isFinished: false,
+      isBotMatch: true
+    };
+    console.log(`[VIGILÂNCIA BOT] Servidor agora vigia se ${socket.user.name} vai quitar.`);
+  });
+
   socket.on('report_bot_game_over', async (data) => {
     try {
       const { result, reason, myScore, oppScore, opponentId, mode } = data;
       const myUserId = socket.user.id;
+
+      // 🔴 NOVO: Se o jogo acabou normalmente (ganhou, perdeu ou saiu pelo menu), limpa a sala de vigilância
+      const roomId = "bot_room_" + myUserId;
+      if (activeMatches[roomId]) {
+        activeMatches[roomId].isFinished = true;
+        delete activeMatches[roomId];
+      }
 
       const human = await User.findOne({ userId: myUserId });
       const bot = await User.findOne({ userId: opponentId });
