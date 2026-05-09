@@ -1409,11 +1409,10 @@ io.on('connection', (socket) => {
           const realWinDelta = calculateEloDelta('win', data.reason, winnerScore, loserScore, winnerEloBefore, loserEloBefore);
           const finalWinPoints = Math.abs(realWinDelta) > 0 ? Math.abs(realWinDelta) : 10;
           const realLossDelta = calculateEloDelta('loss', data.reason, loserScore, winnerScore, loserEloBefore, winnerEloBefore);
-          // INCREMENTA ESTATÍSTICAS E MISSÕES DOS DOIS JOGADORES AQUI
+
           const p1Result = (winner.userId === p1Data.id) ? 'win' : 'loss';
           const p2Result = (winner.userId === p2Data.id) ? 'win' : 'loss';
-          await processPostMatchStats(p1Data.id, match.mode, p1Result);
-          await processPostMatchStats(p2Data.id, match.mode, p2Result);
+
           console.log(`[ELO CALC] Winner (${winner.username}): +${finalWinPoints} | Loser (${loser.username}): ${realLossDelta}`);
 
           winner.elo += finalWinPoints;
@@ -1421,7 +1420,12 @@ io.on('connection', (socket) => {
           loser.elo = Math.max(0, loser.elo + realLossDelta);
           loser.losses++;
 
+          // 🔴 CORREÇÃO: Salva o Elo PRIMEIRO! Isso evita que o Mongoose sobrescreva o progresso das missões.
           await Promise.all([winner.save(), loser.save()]);
+
+          // INCREMENTA ESTATÍSTICAS E MISSÕES DOS DOIS JOGADORES AQUI (Agora com os dados frescos)
+          await processPostMatchStats(p1Data.id, match.mode, p1Result);
+          await processPostMatchStats(p2Data.id, match.mode, p2Result);
 
           // INCREMENTA A MISSÃO DIÁRIA DOS DOIS JOGADORES AQUI
           await incrementDailyGame(p1Data.id);
