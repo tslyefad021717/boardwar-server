@@ -187,6 +187,20 @@ const STORE_CATALOG = {
 // ===========================================================================
 // 2. ESTADO GLOBAL
 // ===========================================================================
+const MIN_APP_VERSION = '1.4.5'; // Mude isso quando quiser forçar a atualização!
+
+function isVersionOutdated(clientVersion, minVersion) {
+  const v1 = clientVersion.split('.').map(Number);
+  const v2 = minVersion.split('.').map(Number);
+  for (let i = 0; i < Math.max(v1.length, v2.length); i++) {
+    const n1 = v1[i] || 0;
+    const n2 = v2[i] || 0;
+    if (n1 < n2) return true;
+    if (n1 > n2) return false;
+  }
+  return false;
+}
+
 // Filas separadas para Xadrez e Minigames
 let queues = {
   ranked: [],
@@ -331,6 +345,14 @@ io.use((socket, next) => {
 
 io.on('connection', (socket) => {
   console.log(`[CONNECT] ${socket.user.name} (${socket.id})`);
+
+  const clientVersion = socket.handshake.auth.version || '0.0.0';
+  if (isVersionOutdated(clientVersion, MIN_APP_VERSION)) {
+    console.log(`[BLOCK] Versão antiga barrada: ${socket.user.name} - Versão: ${clientVersion} (Mínima: ${MIN_APP_VERSION})`);
+    socket.emit('force_update_required', { minVersion: MIN_APP_VERSION });
+    setTimeout(() => socket.disconnect(true), 1000);
+    return;
+  }
 
   const oldSocketId = onlineUsers[socket.user.id];
   if (oldSocketId && oldSocketId !== socket.id) {
