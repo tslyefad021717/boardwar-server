@@ -187,7 +187,7 @@ const STORE_CATALOG = {
 // ===========================================================================
 // 2. ESTADO GLOBAL
 // ===========================================================================
-const MIN_APP_VERSION = '1.4.6'; // Mude isso quando quiser forçar a atualização!
+const MIN_APP_VERSION = '1.4.7'; // Mude isso quando quiser forçar a atualização!
 
 function isVersionOutdated(clientVersion, minVersion) {
   const v1 = clientVersion.split('.').map(Number);
