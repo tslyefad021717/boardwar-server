@@ -476,6 +476,49 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('login_apple', async (data) => {
+    const { appleId, name, email } = data;
+
+    try {
+      // Tenta encontrar o usuário pelo Apple ID
+      let user = await User.findOne({ appleId: appleId });
+
+      if (!user) {
+        // Se não existe, cria um novo jogador
+        const newUsername = `${name}_${uuidv4().substring(0, 5)}`;
+        user = new User({
+          userId: uuidv4(),
+          username: newUsername,
+          appleId: appleId,
+          email: email || '',
+          name: name
+        });
+        await user.save();
+        console.log(`🍎 Novo usuário Apple criado: ${newUsername}`);
+      } else {
+        console.log(`🍎 Usuário Apple logado: ${user.username}`);
+      }
+
+      // Conecta o usuário e envia os dados de volta para o jogo
+      onlineUsers[user.userId] = socket.id;
+      socket.emit('login_success', {
+        userId: user.userId,
+        username: user.username,
+        elo: user.elo,
+        rank: getRankName(user.elo),
+        silver: user.silverCoins,
+        gold: user.goldCoins,
+        equippedItem: user.equippedItem,
+        equippedSkin: user.equippedSkin,
+        inventory: user.inventory || []
+      });
+
+    } catch (err) {
+      console.error("❌ Erro no login_apple:", err.message);
+      socket.emit('error', { message: "Erro ao processar login Apple." });
+    }
+  });
+
   // ===========================================================================
   // SISTEMA DE TAREFAS DIÁRIAS E RECOMPENSAS
   // ===========================================================================
