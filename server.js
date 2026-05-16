@@ -27,6 +27,7 @@ const userSchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true },
   username: { type: String, required: true, unique: true },
   googleId: { type: String, unique: true, sparse: true },
+  appleId: { type: String, unique: true, sparse: true },
   email: { type: String },
   elo: { type: Number, default: 600 },
   wins: { type: Number, default: 0 },
@@ -476,46 +477,42 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('login_apple', async (data) => {
-    const { appleId, name, email } = data;
-
+  socket.on('link_apple_account', async (data) => {
     try {
-      // Tenta encontrar o usuário pelo Apple ID
-      let user = await User.findOne({ appleId: appleId });
+      const { appleId, name, email } = data;
+      const currentUserId = socket.user.id;
 
-      if (!user) {
-        // Se não existe, cria um novo jogador
-        const newUsername = `${name}_${uuidv4().substring(0, 5)}`;
-        user = new User({
-          userId: uuidv4(),
-          username: newUsername,
-          appleId: appleId,
-          email: email || '',
-          name: name
+      let existingUser = await User.findOne({ appleId: appleId });
+
+      if (existingUser) {
+        socket.user.id = existingUser.userId;
+        socket.user.name = existingUser.username;
+
+        socket.emit('apple_link_success', {
+          action: 'recovered',
+          userId: existingUser.userId,
+          username: existingUser.username,
+          elo: existingUser.elo,
+          silver: existingUser.silverCoins,
+          gold: existingUser.goldCoins
         });
-        await user.save();
-        console.log(`🍎 Novo usuário Apple criado: ${newUsername}`);
+        console.log(`[AUTH] Conta Apple recuperada: ${existingUser.username}`);
       } else {
-        console.log(`🍎 Usuário Apple logado: ${user.username}`);
+        let user = await User.findOne({ userId: currentUserId });
+        if (user) {
+          user.appleId = appleId;
+          if (email) user.email = email;
+          await user.save();
+
+          socket.emit('apple_link_success', { action: 'linked' });
+          console.log(`[AUTH] Conta Apple vinculada: ${user.username}`);
+        } else {
+          socket.emit('apple_link_error', "Usuário não encontrado no banco de dados para vincular.");
+        }
       }
-
-      // Conecta o usuário e envia os dados de volta para o jogo
-      onlineUsers[user.userId] = socket.id;
-      socket.emit('login_success', {
-        userId: user.userId,
-        username: user.username,
-        elo: user.elo,
-        rank: getRankName(user.elo),
-        silver: user.silverCoins,
-        gold: user.goldCoins,
-        equippedItem: user.equippedItem,
-        equippedSkin: user.equippedSkin,
-        inventory: user.inventory || []
-      });
-
-    } catch (err) {
-      console.error("❌ Erro no login_apple:", err.message);
-      socket.emit('error', { message: "Erro ao processar login Apple." });
+    } catch (e) {
+      console.error("Erro ao vincular Apple:", e);
+      socket.emit('apple_link_error', "Erro ao processar login com Apple.");
     }
   });
 
