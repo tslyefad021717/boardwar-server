@@ -186,6 +186,7 @@ const STORE_CATALOG = {
   'emoji_aiai': { priceSilver: 100, priceGold: 10, type: 'emoji' },
   'map_zumbi': { priceSilver: 1000, priceGold: 100, type: 'map' },
   'map_infernal': { priceSilver: 1500, priceGold: 150, type: 'map' },
+  'map_inferno_gelo': { priceSilver: 1500, priceGold: 150, type: 'map' },
   'item_tumulo': { priceSilver: 2000, priceGold: 200, type: 'item' },
   'item_gosmazumbi': { priceSilver: 1500, priceGold: 150, type: 'item' },
   'item_poca_sangue': { priceSilver: 1500, priceGold: 150, type: 'item' },
