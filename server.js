@@ -192,8 +192,10 @@ const STORE_CATALOG = {
   'item_gosmazumbi': { priceSilver: 1500, priceGold: 150, type: 'item' },
   'item_poca_sangue': { priceSilver: 1500, priceGold: 150, type: 'item' },
   'item_poca_inferno': { priceSilver: 2000, priceGold: 200, type: 'item' },
+  'poço_sem_fim': { priceSilver: 2000, priceGold: 200, type: 'item' },
   'monstros': { priceSilver: 5400, priceGold: 270, type: 'skin' },
   'caidos': { priceSilver: 5400, priceGold: 270, type: 'skin' },
+  'atlantis': { priceSilver: 5400, priceGold: 270, type: 'skin' },
 };
 // ===========================================================================
 // 2. ESTADO GLOBAL
