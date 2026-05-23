@@ -360,10 +360,17 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   console.log(`[CONNECT] ${socket.user.name} (${socket.id})`);
 
-  const clientVersion = socket.handshake.auth.version || '0.0.0';
-  if (isVersionOutdated(clientVersion, MIN_APP_VERSION)) {
-    console.log(`[BLOCK] Versão antiga barrada: ${socket.user.name} - Versão: ${clientVersion} (Mínima: ${MIN_APP_VERSION})`);
-    socket.emit('force_update_required', { minVersion: MIN_APP_VERSION });
+  const auth = socket.handshake.auth;
+  const clientVersion = auth.version || "1.0.0";
+  const platform = auth.platform || "android";
+
+  // Escolhe a versão mínima correta baseada na plataforma do jogador
+  const minVersion = platform === "ios" ? MIN_VERSION_IOS : MIN_VERSION_ANDROID;
+
+  // Se a versão do jogador for menor que a mínima exigida para a plataforma dele, barra a conexão
+  if (isVersionOutdated(clientVersion, minVersion)) {
+    console.log(`[BLOCK] Conexão recusada: ${socket.user.name} - Versão: ${clientVersion} (${platform}). Mínima exigida: ${minVersion}`);
+    socket.emit('force_update_required', { minVersion: minVersion });
     setTimeout(() => socket.disconnect(true), 1000);
     return;
   }
