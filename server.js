@@ -201,7 +201,7 @@ const STORE_CATALOG = {
   'monstros': { priceSilver: 5400, priceGold: 270, type: 'skin' },
   'caidos': { priceSilver: 5400, priceGold: 270, type: 'skin' },
   'atlantis': { priceSilver: 5400, priceGold: 270, type: 'skin' },
-  'jurassico': { priceSilver: 5400, priceGold: 270, type: 'bundle' },
+  'jurassico': { priceSilver: 5400, priceGold: 270, type: 'skin' },
 };
 // ===========================================================================
 // 2. ESTADO GLOBAL
