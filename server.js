@@ -70,8 +70,11 @@ const userSchema = new mongoose.Schema({
   uniqueTasks: {
     tutorialClaimed: { type: Boolean, default: false },
     rateClaimed: { type: Boolean, default: false },
-    inviteLastClaimedDate: { type: String, default: "" }
+    inviteLastClaimedDate: { type: String, default: "" },
+    whatsappClaimed: { type: Boolean, default: false },
+    firstPurchaseClaimed: { type: Boolean, default: false }
   },
+  hasPurchasedOuro: { type: Boolean, default: false },
   loginReward: {
     lastLoginDate: { type: String, default: "" },
     currentStreak: { type: Number, default: 0 },
@@ -387,6 +390,7 @@ io.on('connection', (socket) => {
   onlineUsers[socket.user.id] = socket.id;
 
   // --- RECONEXÃO ---
+  // --- RECONEXÃO ---
   const existingRoomId = Object.keys(activeMatches).find(roomId => {
     const match = activeMatches[roomId];
     return match && (match.p1.id === socket.user.id || match.p2.id === socket.user.id);
@@ -404,8 +408,16 @@ io.on('connection', (socket) => {
         delete reconnectionTimeouts[existingRoomId];
       }
 
-      io.to(existingRoomId).emit('game_message', { type: 'force_full_sync_request' });
       socket.to(existingRoomId).emit('game_message', { type: 'opponent_reconnected' });
+
+      // 🔴 NOVO COFRE: Se existir uma foto oficial, envia IMEDIATAMENTE para quem conectou
+      if (match.lastOfficialState) {
+        console.log(`[VAULT] Restaurando estado oficial do cofre para ${socket.user.name}`);
+        socket.emit('sync_game_state', match.lastOfficialState);
+      } else {
+        // Se o cofre estiver vazio, faz o processo antigo
+        io.to(existingRoomId).emit('game_message', { type: 'force_full_sync_request' });
+      }
     }
   }
 
@@ -749,6 +761,19 @@ io.on('connection', (socket) => {
         if (canClaim) {
           user.uniqueTasks.inviteLastClaimedDate = today;
           rewardSilver = 150;
+        }
+      } else if (taskType === 'unique_whatsapp' && (!user.uniqueTasks || !user.uniqueTasks.whatsappClaimed)) {
+        if (!user.uniqueTasks) user.uniqueTasks = { tutorialClaimed: false, rateClaimed: false, inviteLastClaimedDate: "", whatsappClaimed: false, firstPurchaseClaimed: false };
+        user.uniqueTasks.whatsappClaimed = true;
+        rewardGold = 30;
+      } else if (taskType === 'unique_first_purchase' && (!user.uniqueTasks || !user.uniqueTasks.firstPurchaseClaimed)) {
+        if (!user.uniqueTasks) user.uniqueTasks = { tutorialClaimed: false, rateClaimed: false, inviteLastClaimedDate: "", whatsappClaimed: false, firstPurchaseClaimed: false };
+
+        if (user.hasPurchasedOuro) {
+          user.uniqueTasks.firstPurchaseClaimed = true;
+          rewardGold = 150;
+        } else {
+          return socket.emit('task_error', "Você precisa comprar ouro na loja primeiro para resgatar esta missão.");
         }
       }
 
@@ -1115,11 +1140,26 @@ io.on('connection', (socket) => {
     }
   });
 
+
+  // 🔴 NOVO COFRE: Armazena a foto do estado enviada pelo celular
+  socket.on('update_vault', (stateData) => {
+    const rId = socket.roomId;
+    if (rId && activeMatches[rId]) {
+      activeMatches[rId].lastOfficialState = stateData;
+    }
+  });
+
   socket.on('check_turn_integrity', (clientThinkIsP1) => {
     const rId = socket.roomId;
     if (rId && activeMatches[rId]) {
       if (clientThinkIsP1 !== activeMatches[rId].isPlayer1Turn) {
-        io.to(rId).emit('game_message', { type: 'force_full_sync_request' });
+        // 🔴 NOVO COFRE: O servidor impõe a verdade para a sala
+        if (activeMatches[rId].lastOfficialState) {
+          console.log(`[VAULT] Turn Integrity falhou na sala ${rId}. Forçando sincronização pelo Cofre.`);
+          io.to(rId).emit('sync_game_state', activeMatches[rId].lastOfficialState);
+        } else {
+          io.to(rId).emit('game_message', { type: 'force_full_sync_request' });
+        }
       }
     }
   });
@@ -1634,6 +1674,7 @@ io.on('connection', (socket) => {
 
       if (goldToAdd > 0) {
         user.goldCoins += goldToAdd;
+        user.hasPurchasedOuro = true; // 🔴 Libera a missão única de primeira compra
         await user.save();
 
         socket.emit('buy_success', {
