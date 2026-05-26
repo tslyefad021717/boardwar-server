@@ -191,6 +191,8 @@ const STORE_CATALOG = {
   'map_infernal': { priceSilver: 1500, priceGold: 150, type: 'map' },
   'map_inferno_gelo': { priceSilver: 1500, priceGold: 150, type: 'map' },
   'map_atlantis': { priceSilver: 1500, priceGold: 150, type: 'map' },
+  'map_jurassico': { priceSilver: 1500, priceGold: 150, type: 'map' },
+  'item_indigesto': { priceSilver: 2000, priceGold: 200, type: 'item' },
   'item_tumulo': { priceSilver: 2000, priceGold: 200, type: 'item' },
   'item_gosmazumbi': { priceSilver: 1500, priceGold: 150, type: 'item' },
   'item_poca_sangue': { priceSilver: 1500, priceGold: 150, type: 'item' },
@@ -199,6 +201,7 @@ const STORE_CATALOG = {
   'monstros': { priceSilver: 5400, priceGold: 270, type: 'skin' },
   'caidos': { priceSilver: 5400, priceGold: 270, type: 'skin' },
   'atlantis': { priceSilver: 5400, priceGold: 270, type: 'skin' },
+  'jurassico': { priceSilver: 5400, priceGold: 270, type: 'bundle' },
 };
 // ===========================================================================
 // 2. ESTADO GLOBAL
