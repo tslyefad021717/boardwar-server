@@ -410,13 +410,12 @@ io.on('connection', (socket) => {
 
       socket.to(existingRoomId).emit('game_message', { type: 'opponent_reconnected' });
 
-      // 🔴 NOVO COFRE: Se existir uma foto oficial, envia IMEDIATAMENTE para quem conectou
+      // 🔴 COFRE: Envia para OS DOIS jogadores para garantir que a trava caia em ambos!
       if (match.lastOfficialState) {
-        console.log(`[VAULT] Restaurando estado oficial do cofre para ${socket.user.name}`);
-        socket.emit('sync_game_state', match.lastOfficialState);
+        console.log(`[VAULT] Restaurando estado oficial do cofre para a sala ${existingRoomId}`);
+        io.to(existingRoomId).emit('sync_game_state', match.lastOfficialState);
       } else {
-        // Se o cofre estiver vazio, faz o processo antigo
-        io.to(existingRoomId).emit('game_message', { type: 'force_full_sync_request' });
+        io.to(existingRoomId).emit('game_message', { type: 'force_full_sync_request', targetId: match.p1.id });
       }
     }
   }
