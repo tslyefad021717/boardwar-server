@@ -836,6 +836,21 @@ io.on('connection', (socket) => {
     } catch (e) { console.error(e); }
   });
 
+  socket.on('remove_friend', async (targetId) => {
+    try {
+      const me = await User.findOne({ userId: socket.user.id });
+      if (!me) return;
+
+      me.friends = me.friends.filter(id => id !== targetId);
+      await me.save();
+
+      socket.emit('friend_success', 'friends.remove_success');
+    } catch (e) {
+      console.error(e);
+      socket.emit('friend_error', 'friends.error_remove');
+    }
+  });
+
   socket.on('get_friends_list', async () => {
     try {
       const me = await User.findOne({ userId: socket.user.id });
