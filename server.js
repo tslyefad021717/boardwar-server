@@ -872,19 +872,24 @@ io.on('connection', (socket) => {
     } catch (e) { console.error(e); }
   });
 
-  socket.on('invite_friend', (friendId) => {
+  socket.on('invite_friend', (data) => {
+    // 🔴 AGORA RECEBE UM OBJETO COM O ID E O MODO
+    const { friendId, mode } = data;
     const friendSocketId = onlineUsers[friendId];
     if (friendSocketId) {
       io.to(friendSocketId).emit('game_invite', {
         inviterId: socket.user.id,
-        inviterName: socket.user.name
+        inviterName: socket.user.name,
+        mode: mode || 'friendly' // 🔴 REPASSA O MODO PARA O AMIGO
       });
     } else {
       socket.emit('friend_error', 'friends.error_offline');
     }
   });
 
-  socket.on('accept_invite', (inviterId) => {
+  socket.on('accept_invite', (data) => {
+    // 🔴 AMIGO DEVOLVE O ID DE QUEM CONVIDOU E O MODO ACEITO
+    const { inviterId, mode } = data;
     const inviterSocketId = onlineUsers[inviterId];
     if (inviterSocketId) {
       const inviterSocket = io.sockets.sockets.get(inviterSocketId);
@@ -892,7 +897,9 @@ io.on('connection', (socket) => {
         // Limpa filas anteriores
         queues.ranked = queues.ranked.filter(s => s.id !== socket.id && s.id !== inviterSocket.id);
         queues.friendly = queues.friendly.filter(s => s.id !== socket.id && s.id !== inviterSocket.id);
-        startMatch(inviterSocket, socket, 'friendly');
+
+        // 🔴 A MÁGICA: Passa o modo dinâmico e a FLAG isInvite = true
+        startMatch(inviterSocket, socket, mode || 'friendly', true);
       } else {
         socket.emit('friend_error', 'friends.error_invite_expired');
       }
@@ -1713,8 +1720,8 @@ io.on('connection', (socket) => {
 
 }); // <--- ESTA É A CHAVE QUE FECHA O io.on('connection') - ELA FICA AQUI AGORA!
 
-// 🔴 CORRIGIDO: startMatch COM FLAG DE HUMANO E ID DO OPONENTE
-async function startMatch(p1, p2, mode) {
+// 🔴 CORRIGIDO: startMatch AGORA RECEBE A FLAG isInvite (Padrão: false)
+async function startMatch(p1, p2, mode, isInvite = false) {
   const roomId = uuidv4();
   p1.join(roomId); p1.roomId = roomId;
   p2.join(roomId); p2.roomId = roomId;
@@ -1734,6 +1741,7 @@ async function startMatch(p1, p2, mode) {
     p1: { id: p1.user.id, name: p1.user.name, elo: elo1 },
     p2: { id: p2.user.id, name: p2.user.name, elo: elo2 },
     mode,
+    isInvite: isInvite, // 🔴 ESSA FLAG PROTEGE O SEU CAMPEONATO FUTURO!
     moveHistory: [],
     p1Time: 1020,
     p2Time: 1020,
@@ -1755,7 +1763,6 @@ async function startMatch(p1, p2, mode) {
     isBot: false,
     myEquippedItem: u1 ? (u1.equippedItem || '') : '',
     opponentItem: u2 ? (u2.equippedItem || '') : '',
-    // 🔴 CORRIGIDO: Puxando da variável certa e enviando as duas
     myEquippedSkin: u1 ? (u1.equippedSkin || '') : '',
     opponentSkin: u2 ? (u2.equippedSkin || '') : ''
   };
@@ -1774,7 +1781,6 @@ async function startMatch(p1, p2, mode) {
     isBot: false,
     myEquippedItem: u2 ? (u2.equippedItem || '') : '',
     opponentItem: u1 ? (u1.equippedItem || '') : '',
-    // 🔴 CORRIGIDO: Adicionado cruzamento de skins para o P2
     myEquippedSkin: u2 ? (u2.equippedSkin || '') : '',
     opponentSkin: u1 ? (u1.equippedSkin || '') : ''
   };
@@ -1782,7 +1788,7 @@ async function startMatch(p1, p2, mode) {
   p1.emit('game_message', p1Payload);
   p2.emit('game_message', p2Payload);
 
-  console.log(`[MATCH START] Sala ${roomId} criada. Modo: ${mode}. ${p1.user.name} vs ${p2.user.name}`);
+  console.log(`[MATCH START] Sala ${roomId} criada. Modo: ${mode} (Convite: ${isInvite}). ${p1.user.name} vs ${p2.user.name}`);
 }
 
 server.listen(process.env.PORT || 8080, () => console.log(`Servidor Ativo`));
