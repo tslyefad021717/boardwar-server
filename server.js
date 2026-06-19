@@ -206,8 +206,8 @@ const STORE_CATALOG = {
 // ===========================================================================
 // 2. ESTADO GLOBAL
 // ===========================================================================
-const MIN_VERSION_ANDROID = "1.5.12";
-const MIN_VERSION_IOS = "1.5.8";
+const MIN_VERSION_ANDROID = "1.5.14";
+const MIN_VERSION_IOS = "1.5.13";
 
 function isVersionOutdated(clientVersion, minVersion) {
   const v1 = clientVersion.split('.').map(Number);
