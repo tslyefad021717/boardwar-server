@@ -740,7 +740,7 @@ io.on('connection', (socket) => {
       } else if (taskType === 'unique_tutorial' && (!user.uniqueTasks || !user.uniqueTasks.tutorialClaimed)) {
         if (!user.uniqueTasks) user.uniqueTasks = { tutorialClaimed: false, rateClaimed: false, inviteLastClaimedDate: "" };
         user.uniqueTasks.tutorialClaimed = true;
-        rewardSilver = 150;
+        rewardSilver = 1500;
       } else if (taskType === 'unique_rate' && (!user.uniqueTasks || !user.uniqueTasks.rateClaimed)) {
         if (!user.uniqueTasks) user.uniqueTasks = { tutorialClaimed: false, rateClaimed: false, inviteLastClaimedDate: "" };
         user.uniqueTasks.rateClaimed = true;
