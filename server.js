@@ -33,6 +33,7 @@ const userSchema = new mongoose.Schema({
   wins: { type: Number, default: 0 },
   losses: { type: Number, default: 0 },
   rankedGamesTotal: { type: Number, default: 0 }, // Novo: Contagem vitalícia de ranqueadas
+  supremeAIWins: { type: Number, default: 0 },
   silverCoins: { type: Number, default: 0 },
   goldCoins: { type: Number, default: 0 },
   ownedItems: [{ type: String }],
@@ -72,7 +73,8 @@ const userSchema = new mongoose.Schema({
     rateClaimed: { type: Boolean, default: false },
     inviteLastClaimedDate: { type: String, default: "" },
     whatsappClaimed: { type: Boolean, default: false },
-    firstPurchaseClaimed: { type: Boolean, default: false }
+    firstPurchaseClaimed: { type: Boolean, default: false },
+    supremeClaimed: { type: Boolean, default: false }
   },
   hasPurchasedOuro: { type: Boolean, default: false },
   loginReward: {
@@ -608,7 +610,8 @@ io.on('connection', (socket) => {
         lifetimeTasks: user.lifetimeTasks || {},
         uniqueTasks: user.uniqueTasks || {},
         loginReward: user.loginReward,
-        rankedGamesTotal: user.rankedGamesTotal || 0
+        rankedGamesTotal: user.rankedGamesTotal || 0,
+        supremeAIWins: user.supremeAIWins || 0
       });
     } catch (e) {
       console.error("Erro ao buscar tarefas:", e);
@@ -769,13 +772,22 @@ io.on('connection', (socket) => {
         user.uniqueTasks.whatsappClaimed = true;
         rewardGold = 30;
       } else if (taskType === 'unique_first_purchase' && (!user.uniqueTasks || !user.uniqueTasks.firstPurchaseClaimed)) {
-        if (!user.uniqueTasks) user.uniqueTasks = { tutorialClaimed: false, rateClaimed: false, inviteLastClaimedDate: "", whatsappClaimed: false, firstPurchaseClaimed: false };
+        if (!user.uniqueTasks) user.uniqueTasks = { tutorialClaimed: false, rateClaimed: false, inviteLastClaimedDate: "", whatsappClaimed: false, firstPurchaseClaimed: false, supremeClaimed: false };
 
         if (user.hasPurchasedOuro) {
           user.uniqueTasks.firstPurchaseClaimed = true;
           rewardGold = 150;
         } else {
           return socket.emit('task_error', "Você precisa comprar ouro na loja primeiro para resgatar esta missão.");
+        }
+      } else if (taskType === 'unique_supreme_ai' && (!user.uniqueTasks || !user.uniqueTasks.supremeClaimed)) {
+        if (!user.uniqueTasks) user.uniqueTasks = { tutorialClaimed: false, rateClaimed: false, inviteLastClaimedDate: "", whatsappClaimed: false, firstPurchaseClaimed: false, supremeClaimed: false };
+
+        if (user.supremeAIWins > 0) {
+          user.uniqueTasks.supremeClaimed = true;
+          rewardGold = 2600;
+        } else {
+          return socket.emit('task_error', "Você precisa vencer a IA Suprema para resgatar esta missão.");
         }
       }
 
@@ -1447,7 +1459,7 @@ io.on('connection', (socket) => {
 
   socket.on('report_bot_game_over', async (data) => {
     try {
-      const { result, reason, myScore, oppScore, opponentId, mode } = data;
+      const { result, reason, myScore, oppScore, opponentId, mode, difficulty } = data;
       const myUserId = socket.user.id;
 
       // 🔴 NOVO: Se o jogo acabou normalmente (ganhou, perdeu ou saiu pelo menu), limpa a sala de vigilância
@@ -1482,6 +1494,10 @@ io.on('connection', (socket) => {
           // Amistoso ou Minigame (Soma apenas para o humano, pois o bot pode não existir no banco)
           if (result === 'win' || result === 'victory') {
             human.wins++;
+            if (mode === 'ai' && difficulty === 4) {
+              human.supremeAIWins = (human.supremeAIWins || 0) + 1;
+              console.log(`[SUPREMA] Vitória contra IA Suprema registrada! Total: ${human.supremeAIWins}`);
+            }
           } else {
             human.losses++;
           }
