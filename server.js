@@ -34,6 +34,7 @@ const userSchema = new mongoose.Schema({
   losses: { type: Number, default: 0 },
   rankedGamesTotal: { type: Number, default: 0 }, // Novo: Contagem vitalícia de ranqueadas
   supremeAIWins: { type: Number, default: 0 },
+  supremeAIGamesPlayed: { type: Number, default: 0 },
   silverCoins: { type: Number, default: 0 },
   goldCoins: { type: Number, default: 0 },
   ownedItems: [{ type: String }],
@@ -1492,14 +1493,21 @@ io.on('connection', (socket) => {
           });
         } else {
           // Amistoso ou Minigame (Soma apenas para o humano, pois o bot pode não existir no banco)
+          if (mode === 'ai' && difficulty === 4) {
+            human.supremeAIGamesPlayed = (human.supremeAIGamesPlayed || 0) + 1;
+          }
+
           if (result === 'win' || result === 'victory') {
             human.wins++;
             if (mode === 'ai' && difficulty === 4) {
               human.supremeAIWins = (human.supremeAIWins || 0) + 1;
-              console.log(`[SUPREMA] Vitória contra IA Suprema registrada! Total: ${human.supremeAIWins}`);
+              console.log(`[SUPREMA] ${human.username} VENCEU a IA Suprema! (Vitórias: ${human.supremeAIWins} / Tentativas: ${human.supremeAIGamesPlayed})`);
             }
           } else {
             human.losses++;
+            if (mode === 'ai' && difficulty === 4) {
+              console.log(`[SUPREMA] ${human.username} PERDEU para a IA Suprema. (Tentativas: ${human.supremeAIGamesPlayed})`);
+            }
           }
           console.log(`[BOT FRIENDLY/MINIGAME] ${human.username} vs Bot: Estatísticas mantidas.`);
         }
