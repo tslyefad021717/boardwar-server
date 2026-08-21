@@ -240,6 +240,80 @@ const reconnectionTimeouts = {};
 const cleanupTimeouts = {};
 
 // ===========================================================================
+// LOBBY DO REI GORDO — 4 reis, todos contra todos.
+// Espera KING_LOBBY_WAIT_MS por humanos; o que faltar vira bot no celular
+// do host (o jogador do slot 0). O servidor NÃO simula nada, só junta a sala.
+// ===========================================================================
+const KING_LOBBY_SIZE = 4;
+const KING_LOBBY_WAIT_MS = 10000;
+
+let kingLobby = [];
+let kingLobbyTimer = null;
+
+function kingLobbyRemove(socketId) {
+  kingLobby = kingLobby.filter(s => s.id !== socketId);
+  if (kingLobby.length === 0 && kingLobbyTimer) {
+    clearTimeout(kingLobbyTimer);
+    kingLobbyTimer = null;
+  }
+}
+
+function startKingMatch(mode) {
+  if (kingLobbyTimer) {
+    clearTimeout(kingLobbyTimer);
+    kingLobbyTimer = null;
+  }
+
+  const humans = kingLobby.filter(s => s.connected).slice(0, KING_LOBBY_SIZE);
+  kingLobby = kingLobby.filter(s => !humans.includes(s));
+
+  if (humans.length === 0) return;
+
+  const roomId = uuidv4();
+  humans.forEach(s => { s.join(roomId); s.roomId = roomId; });
+
+  // Humanos ficam nos slots 0..N-1. O resto vira bot.
+  const botSlots = [];
+  for (let i = humans.length; i < KING_LOBBY_SIZE; i++) botSlots.push(i);
+
+  const names = [];
+  for (let i = 0; i < KING_LOBBY_SIZE; i++) {
+    names.push(i < humans.length ? humans[i].user.name : `BOT ${i + 1}`);
+  }
+
+  // ATENÇÃO: p1 e p2 são OBRIGATÓRIOS aqui.
+  // O 'leave_game' varre TODAS as salas fazendo m.p1.id / m.p2.id sem checar
+  // se existem — sem esses dois campos o servidor inteiro quebraria quando
+  // qualquer jogador (de qualquer modo) mandasse leave_game.
+  activeMatches[roomId] = {
+    p1: { id: humans[0].user.id, name: humans[0].user.name, elo: 600 },
+    p2: humans[1]
+      ? { id: humans[1].user.id, name: humans[1].user.name, elo: 600 }
+      : { id: `king_bot_${roomId}`, name: 'BOT', elo: 600 },
+    kingPlayers: humans.map(s => s.user.id),
+    mode,
+    isInvite: false,
+    moveHistory: [],
+    isPlayer1Turn: true,
+    isFinished: false
+  };
+
+  humans.forEach((s, idx) => {
+    s.emit('game_message', {
+      type: 'king_match_start',
+      mode: mode,
+      slot: idx,
+      playerCount: KING_LOBBY_SIZE,
+      botSlots: botSlots,
+      names: names,
+      isPlayer1: idx === 0
+    });
+  });
+
+  console.log(`[KING] Sala ${roomId}: ${humans.length} humano(s) + ${botSlots.length} bot(s)`);
+}
+
+// ===========================================================================
 // 3. LÓGICA DE ELO
 // ===========================================================================
 function getRankName(elo) {
@@ -974,6 +1048,26 @@ io.on('connection', (socket) => {
     // A. MINI-GAMES (Lógica nova adicionada)
     // ===========================================================
     // Dentro de socket.on('find_match', ...)
+    // ===========================================================
+    // REI GORDO: lobby de 4 (todos contra todos)
+    // ===========================================================
+    if (mode === 'competitive_king' || mode === 'king_pvp') {
+      kingLobbyRemove(socket.id);
+      kingLobby.push(socket);
+      socket.emit('status', "Procurando reis...");
+
+      if (kingLobby.filter(s => s.connected).length >= KING_LOBBY_SIZE) {
+        startKingMatch(mode);
+      } else if (!kingLobbyTimer) {
+        // Ninguém apareceu em 10s? Fecha a sala com bots.
+        kingLobbyTimer = setTimeout(() => {
+          kingLobbyTimer = null;
+          startKingMatch(mode);
+        }, KING_LOBBY_WAIT_MS);
+      }
+      return;
+    }
+
     if (mode && mode.startsWith('competitive_')) {
       let queueName = '';
       // Trocamos archery por thief aqui:
@@ -1063,6 +1157,7 @@ io.on('connection', (socket) => {
     Object.keys(queues).forEach(k => {
       queues[k] = queues[k].filter(s => s.id !== socket.id);
     });
+    kingLobbyRemove(socket.id);
   });
   // =================================================================
   // 🚑 VACINA ANTI-ZUMBI (PARTE 2 - O QUE FALTOU)
@@ -1634,7 +1729,7 @@ io.on('connection', (socket) => {
     match.isFinished = true;
 
     if (cleanupTimeouts[rId]) clearTimeout(cleanupTimeouts[rId]);
-    const isMinigame = ['thief_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp', 'queen_pvp'].includes(match.mode);
+    const isMinigame = ['thief_pvp', 'horse_race_pvp', 'tennis_pvp', 'king_pvp', 'queen_pvp', 'competitive_king'].includes(match.mode);
 
     cleanupTimeouts[rId] = setTimeout(() => {
       if (activeMatches[rId]) {
@@ -1653,6 +1748,7 @@ io.on('connection', (socket) => {
     Object.keys(queues).forEach(k => {
       queues[k] = queues[k].filter(s => s.id !== socket.id);
     });
+    kingLobbyRemove(socket.id);
 
     const rId = socket.roomId;
     if (rId && activeMatches[rId] && !activeMatches[rId].isFinished) {
